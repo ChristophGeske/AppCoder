@@ -32,7 +32,10 @@ data class MinimalBatchResult(
 )
 
 private fun JSONArray.forEachObject(action: (JSONObject) -> Unit) {
-    for (i in 0 until length()) optJSONObject(i)?.let(action)
+    for (i in 0 until length()) {
+        val obj = optJSONObject(i)
+        if (obj != null) action(obj)
+    }
 }
 
 class GeminiHelper(
@@ -67,6 +70,24 @@ class GeminiHelper(
         Log.i("GeminiHelper", "API model set to: $currentModelIdentifier")
     }
 
+    // Public JSON helper extensions (used by Coordinator too)
+    internal fun JSONObject.unwrapDataIfPresent(): JSONObject = this.optJSONObject("data") ?: this
+    internal fun JSONObject.optJSONArrayByKeys(vararg keys: String): JSONArray? {
+        for (k in keys) {
+            val arr = this.optJSONArray(k)
+            if (arr != null) return arr
+        }
+        return null
+    }
+    internal fun JSONObject.optStringByKeys(vararg keys: String): String? {
+        for (k in keys) {
+            val v = this.optString(k, null)
+            if (!v.isNullOrBlank()) return v
+        }
+        return null
+    }
+
+    // --- NEW FUNCTION for the summarization step ---
     internal fun getSummariesSchema(): String = JSONObject().apply {
         put("type", "object")
         put("properties", JSONObject().apply {
@@ -86,11 +107,13 @@ class GeminiHelper(
         put("required", JSONArray().put("file_summaries"))
     }.toString()
 
+    // --- UPDATED FUNCTION for the iterative workflow ---
     internal fun getFileModificationsSchema(): String = JSONObject().apply {
         put("type", "object")
         put("properties", JSONObject().apply {
             put("filesToWrite", JSONObject().apply {
                 put("type", "array"); put("nullable", true)
+                put("description", "An array of files to write or overwrite with new content.")
                 put("items", JSONObject().apply {
                     put("type", "object")
                     put("properties", JSONObject().apply {
@@ -98,17 +121,23 @@ class GeminiHelper(
                         put("fileContent", JSONObject().apply { put("type", "string") })
                     })
                     put("required", JSONArray().put("filePath").put("fileContent"))
-                    put("additionalProperties", false)
                 })
             })
             put("filesToDelete", JSONObject().apply {
                 put("type", "array"); put("nullable", true)
+                put("description", "An array of file paths to delete.")
                 put("items", JSONObject().apply { put("type", "string") })
             })
-            put("conclusion", JSONObject().apply { put("type", "string"); put("nullable", true) })
+            put("requestMoreFiles", JSONObject().apply {
+                put("type", "array"); put("nullable", true)
+                put("description", "An array of additional file paths the AI needs to see to continue. Set to null or empty if finished.")
+                put("items", JSONObject().apply { put("type", "string") })
+            })
+            put("conclusion", JSONObject().apply {
+                put("type", "string"); put("nullable", true)
+                put("description", "A final summary of the changes once the entire task is complete.")
+            })
         })
-        put("required", JSONArray().put("filesToWrite").put("filesToDelete").put("conclusion"))
-        put("additionalProperties", false)
     }.toString()
 
     internal fun getMinimalFilesSchema(): String = JSONObject().apply {
@@ -218,7 +247,7 @@ class GeminiHelper(
                         if (!response.isSuccessful || responseBody == null) {
                             var detail = responseBody ?: "No error body"
                             try {
-                                val j = JSONObject(responseBody)
+                                val j = JSONObject(responseBody ?: "")
                                 detail = j.optJSONObject("error")?.optString("message", detail) ?: j.optString("message", detail)
                             } catch (_: Exception) {}
                             errorHandlerCallback("API Error ($effectiveModelIdentifier - Code: ${response.code}): $detail", null)
@@ -306,8 +335,10 @@ class GeminiHelper(
         val userContent = StringBuilder().apply {
             geminiContents.forEach { content ->
                 content.optJSONArray("parts")?.let { parts ->
-                    for (i in 0 until parts.length())
-                        parts.optJSONObject(i)?.optString("text")?.let { append(it).append("\n") }
+                    for (i in 0 until parts.length()) {
+                        val t = parts.optJSONObject(i)?.optString("text", "")
+                        if (!t.isNullOrBlank()) append(t).append("\n")
+                    }
                 }
             }
         }.toString()
@@ -436,7 +467,7 @@ class GeminiHelper(
                     val part = parts.optJSONObject(i) ?: continue
                     if (part.optBoolean("thought", false)) continue
 
-                    val raw = part.optString("text", null) ?: continue
+                    val raw = part.optString("text", "")
                     if (raw.isBlank()) continue
 
                     val text = unwrapCodeFences(raw).trim()
@@ -454,16 +485,14 @@ class GeminiHelper(
             } else if (response.has("choices")) {
                 val firstChoice = response.optJSONArray("choices")?.optJSONObject(0) ?: return ""
                 val message = firstChoice.optJSONObject("message") ?: return ""
-                message.optString("content", null)?.let { if (it.isNotBlank()) return it }
-                message.optJSONArray("tool_calls")?.let { toolCalls ->
-                    if (toolCalls.length() > 0) {
-                        toolCalls.optJSONObject(0)
-                            ?.optJSONObject("function")
-                            ?.optString("arguments", "")
-                            ?.takeIf { it.isNotBlank() }
-                            ?.let { return it }
-                    }
-                }
+                val content = message.optString("content", "")
+                if (content.isNotBlank()) return content
+
+                val args = message.optJSONArray("tool_calls")
+                    ?.optJSONObject(0)
+                    ?.optJSONObject("function")
+                    ?.optString("arguments", "") ?: ""
+                if (args.isNotBlank()) return args
                 ""
             } else {
                 Log.w("GeminiHelper", "Could not find 'candidates' or 'choices' in API response.")
@@ -486,50 +515,6 @@ class GeminiHelper(
             if (t.endsWith("```")) t = t.removeSuffix("```")
         }
         return t.trim()
-    }
-
-    private fun JSONObject.optJSONArrayByKeys(vararg keys: String): JSONArray? {
-        for (k in keys) optJSONArray(k)?.let { return it }
-        return null
-    }
-    private fun JSONObject.optStringByKeys(vararg keys: String): String? {
-        for (k in keys) {
-            val v = optString(k, null)
-            if (!v.isNullOrBlank()) return v
-        }
-        return null
-    }
-    private fun JSONObject.unwrapDataIfPresent(): JSONObject {
-        return optJSONObject("data") ?: this
-    }
-
-    private fun parseAiStructuredResponse(jsonText: String): AiStructuredResponse {
-        val filesToWrite = mutableListOf<AiFileInstruction>()
-        val filesToDelete = mutableListOf<String>()
-        var conclusion: String? = null
-        try {
-            val root = JSONObject(jsonText).unwrapDataIfPresent()
-            val writeArray = root.optJSONArrayByKeys("filesToWrite", "files_to_write")
-            writeArray?.forEachObject { obj ->
-                val path = obj.optStringByKeys("filePath", "file_path") ?: ""
-                val content = obj.optStringByKeys("fileContent", "file_content") ?: ""
-                if (path.isNotBlank()) filesToWrite.add(AiFileInstruction(path, content))
-            }
-            val deleteArray = root.optJSONArrayByKeys("filesToDelete", "files_to_delete")
-            deleteArray?.let { arr ->
-                for (i in 0 until arr.length()) {
-                    arr.optString(i)?.takeIf { it.isNotBlank() }?.let { filesToDelete.add(it) }
-                }
-            }
-            conclusion = root.optStringByKeys("conclusion", "summary")
-        } catch (e: JSONException) {
-            Log.e("GeminiHelper", "Error parsing AiStructuredResponse JSON: '$jsonText'. Error: ${e.message}", e)
-        }
-        return AiStructuredResponse(
-            filesToWrite = filesToWrite.takeIf { it.isNotEmpty() },
-            filesToDelete = filesToDelete.takeIf { it.isNotEmpty() },
-            conclusion = conclusion
-        )
     }
 
     fun parseMinimalFilesResponse(jsonText: String): Map<String, String>? {
@@ -563,7 +548,8 @@ class GeminiHelper(
             val unchanged = mutableListOf<String>()
             root.optJSONArrayByKeys("unchanged")?.let { arr ->
                 for (i in 0 until arr.length()) {
-                    arr.optString(i)?.takeIf { it.isNotBlank() }?.let { unchanged.add(it) }
+                    val s = arr.optString(i)
+                    if (!s.isNullOrBlank()) unchanged.add(s)
                 }
             }
 
@@ -585,6 +571,36 @@ class GeminiHelper(
             Log.e("GeminiHelper", "Error parsing AiSummaryResponse JSON: '$jsonText'. Error: ${e.message}", e)
             null
         }
+    }
+
+    private fun parseAiStructuredResponse(jsonText: String): AiStructuredResponse {
+        val filesToWrite = mutableListOf<AiFileInstruction>()
+        val filesToDelete = mutableListOf<String>()
+        var conclusion: String? = null
+        try {
+            val root = JSONObject(jsonText).unwrapDataIfPresent()
+            val writeArray = root.optJSONArrayByKeys("filesToWrite", "files_to_write")
+            writeArray?.forEachObject { obj ->
+                val path = obj.optStringByKeys("filePath", "file_path") ?: ""
+                val content = obj.optStringByKeys("fileContent", "file_content") ?: ""
+                if (path.isNotBlank()) filesToWrite.add(AiFileInstruction(path, content))
+            }
+            val deleteArray = root.optJSONArrayByKeys("filesToDelete", "files_to_delete")
+            deleteArray?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val s = arr.optString(i)
+                    if (!s.isNullOrBlank()) filesToDelete.add(s)
+                }
+            }
+            conclusion = root.optStringByKeys("conclusion", "summary")
+        } catch (e: JSONException) {
+            Log.e("GeminiHelper", "Error parsing AiStructuredResponse JSON: '$jsonText'. Error: ${e.message}", e)
+        }
+        return AiStructuredResponse(
+            filesToWrite = filesToWrite.takeIf { it.isNotEmpty() },
+            filesToDelete = filesToDelete.takeIf { it.isNotEmpty() },
+            conclusion = conclusion
+        )
     }
 
     fun convertAiResponseToFileModifications(aiResponse: AiStructuredResponse): FileModifications {

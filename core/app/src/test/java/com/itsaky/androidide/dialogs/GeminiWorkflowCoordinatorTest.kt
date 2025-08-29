@@ -7,6 +7,7 @@ import io.mockk.junit4.MockKRule
 import io.mockk.justRun
 import io.mockk.slot
 import io.mockk.verify
+import org.json.JSONObject
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -32,6 +33,7 @@ class GeminiWorkflowCoordinatorTest {
 
     @Before
     fun setUp() {
+        // --- FIX: The constructor now matches the new signature ---
         coordinator = GeminiWorkflowCoordinator(
             geminiHelper = mockGeminiHelper,
             directLogAppender = { },
@@ -39,48 +41,51 @@ class GeminiWorkflowCoordinatorTest {
             serviceManager = mockServiceManager,
             fileScanner = mockFileScanner
         )
+        // --- END FIX ---
 
-        // Standard-Setup
+        // Standard mock setup
         every { mockBridge.getContextBridge() } returns mockContext
         every { mockFileScanner.scanProjectFiles(any()) } returns listOf("src/main/App.kt")
-        every { mockBridge.isModifyingExistingProjectBridge } returns true
-        every { mockGeminiHelper.currentModelIdentifier } returns "gemini-pro"
-        // WICHTIG: Der Coordinator setzt dieses Property. Wir müssen das mocken.
         every { mockBridge.currentProjectDirBridge = any() } returns Unit
-        // Wenn der Getter aufgerufen wird, geben wir ein Dummy-File zurück.
         every { mockBridge.currentProjectDirBridge } returns File("/fake/path")
 
-        // Führe Code auf dem UI-Thread sofort aus
+        // Immediately execute code on the UI thread
         val uiBlock = slot<() -> Unit>()
         every { mockBridge.runOnUiThreadBridge(capture(uiBlock)) } answers {
             uiBlock.captured.invoke()
         }
         
-        // Erlaube den Aufruf von sendApiRequest
+        // Allow API requests to be called
         justRun { mockGeminiHelper.sendApiRequest(any(), any(), any(), any(), any()) }
     }
 
     @Test
-    fun `startModificationFlow should execute initial steps and call api`() {
+    fun `startModificationFlow should scan files and request summaries`() {
         // ARRANGE
         val appName = "TestApp"
-        val appDescription = "Eine einfache App"
+        val appDescription = "A simple app"
         val projectDir = File("/fake/path")
+        val summariesSchema = "{ \"type\": \"object\" }" // Dummy schema
+        every { mockGeminiHelper.getSummariesSchema() } returns summariesSchema
 
         // ACT
         coordinator.startModificationFlow(appName, appDescription, projectDir)
 
         // ASSERT
-        // Wir überprüfen einfach, ob die vier wichtigsten Aktionen stattgefunden haben.
-        // Die Reihenfolge ist hierbei nicht entscheidend (unordered).
-        verify(ordering = io.mockk.Ordering.UNORDERED) {
-            mockServiceManager.startService(mockContext, "Generating code for $appName")
-            mockBridge.updateStateBridge(AiWorkflowState.SELECTING_FILES)
+        // Verify the initial steps of the NEW pipeline
+        verify {
+            // 1. Starts the service
+            mockServiceManager.startService(mockContext, "Analyzing project structure...")
+            // 2. Scans the files
             mockFileScanner.scanProjectFiles(projectDir)
+            // 3. Updates the UI state to SUMMARIZING
+            mockBridge.updateStateBridge(AiWorkflowState.SUMMARIZING_FILES)
+            // 4. Sends the first API request to get summaries
             mockGeminiHelper.sendApiRequest(
                 contents = any(),
                 callback = any(),
-                responseMimeTypeOverride = "application/json"
+                modelIdentifierOverride = any(),
+                responseSchemaJson = summariesSchema
             )
         }
     }

@@ -141,7 +141,7 @@ class FileEditorViewModel(application: Application) : AndroidViewModel(applicati
                     addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 appCtx.startActivity(intent)
-                appendToViewModelLog("🚀 Auto-build started for '${projectDir.name}'.\n")
+                appendToViewModelLog("🛠️ Auto-build started for '${projectDir.name}'.\n")
             } catch (e: Exception) {
                 handleViewModelError("Failed to trigger build: ${e.message}", e)
             }
@@ -165,14 +165,12 @@ class FileEditorViewModel(application: Application) : AndroidViewModel(applicati
         )
     }
 
-    // --- FINAL CORRECTED INITIALIZATION ---
+    // Final corrected initialization: Coordinator without serviceManager/fileScanner
     private val geminiWorkflowCoordinator: GeminiWorkflowCoordinator by lazy {
         GeminiWorkflowCoordinator(
             geminiHelper = geminiHelper,
             directLogAppender = { msg -> appendToLogBridge(msg) },
-            bridge = this,
-            serviceManager = DefaultAiServiceManager(),
-            fileScanner = DefaultProjectFileScanner()
+            bridge = this
         )
     }
 
@@ -380,10 +378,13 @@ class FileEditorViewModel(application: Application) : AndroidViewModel(applicati
                 AiWorkflowState.IDLE -> "Ready"
                 AiWorkflowState.CREATING_PROJECT_TEMPLATE -> "Creating base project..."
                 AiWorkflowState.PREPARING_EXISTING_PROJECT -> "Preparing project from version..."
+                AiWorkflowState.SUMMARIZING_FILES -> "Analyzing files..."
                 AiWorkflowState.SELECTING_FILES -> "AI is selecting files..."
                 AiWorkflowState.GENERATING_CODE -> "AI is generating code..."
                 AiWorkflowState.GENERATING_SUMMARY -> "AI is generating summary..."
                 AiWorkflowState.READY_FOR_ACTION -> if (_isModifyingProject.value == true) "Project modified. Ready." else "New project generated. Ready."
+                AiWorkflowState.AWAITING_BUILD_RESULT -> "Building project..."
+                AiWorkflowState.ANALYZING_BUILD_ERROR -> "Analyzing build error..."
                 AiWorkflowState.ERROR -> "Error occurred (see log)"
             }
             if (_statusText.value != newStatusText) _statusText.value = newStatusText

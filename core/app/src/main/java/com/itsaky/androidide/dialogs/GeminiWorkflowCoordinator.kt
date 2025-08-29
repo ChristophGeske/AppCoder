@@ -1,70 +1,100 @@
 package com.itsaky.androidide.dialogs
 
 import android.util.Log
+import com.itsaky.androidide.services.AiForegroundService
 import org.json.JSONArray
 import org.json.JSONException
+import org.json.JSONObject
 import java.io.File
 import java.io.FileReader
 import java.io.IOException
 import java.util.ArrayDeque
 import kotlin.math.max
 
+// ---- Local JSON helper extensions (avoid unresolved references) ----
+private fun JSONObject.unwrapDataIfPresent(): JSONObject = this.optJSONObject("data") ?: this
+private fun JSONObject.optJSONArrayByKeys(vararg keys: String): JSONArray? {
+    for (k in keys) {
+        val arr = this.optJSONArray(k)
+        if (arr != null) return arr
+    }
+    return null
+}
+private fun JSONObject.optStringByKeys(vararg keys: String): String? {
+    for (k in keys) {
+        val v = this.optString(k, null)
+        if (!v.isNullOrBlank()) return v
+    }
+    return null
+}
+private fun JSONArray.forEachObject(action: (JSONObject) -> Unit) {
+    for (i in 0 until this.length()) {
+        val obj = this.optJSONObject(i)
+        if (obj != null) action(obj)
+    }
+}
+
 class GeminiWorkflowCoordinator(
     private val geminiHelper: GeminiHelper,
     private val directLogAppender: (String) -> Unit,
-    private val bridge: ViewModelFileEditorBridge,
-    private val serviceManager: AiServiceManager,
-    private val fileScanner: ProjectFileScanner // <-- Final dependency added
+    private val bridge: ViewModelFileEditorBridge
 ) {
     companion object {
-        private const val TAG = "AiWorkflow"
+        private const val TAG = "AiWorkflow_Merged"
         private const val PROTECTED_VERSION_FILE = ".version_source"
 
-        private const val MAX_STRUCTURED_RETRIES = 2
         private const val MAX_FALLBACK_RETRIES = 2
         private const val MAX_SUMMARY_RETRIES = 1
         private const val RAW_LOG_SNIPPET = 2048
 
-        // Batch sizing defaults (approx char budget; ~4 chars ≈ 1 token)
+        // Batch sizing defaults
         private const val BUDGET_MINI_CHARS = 90_000
         private const val BUDGET_BIG_CHARS = 100_000
 
-        // We will dynamically choose max files per batch by mode
-        private const val FILES_PER_BATCH_ALL = Int.MAX_VALUE // we enforce single "ALL" batch
+        private const val FILES_PER_BATCH_ALL = Int.MAX_VALUE
         private const val FILES_PER_BATCH_10 = 10
         private const val FILES_PER_BATCH_5 = 5
         private const val FILES_PER_BATCH_1 = 1
 
-        // Selection previews
         private const val SELECTION_TOTAL_PREVIEW_BUDGET = 80_000
         private const val SELECTION_PER_FILE_PREVIEW = 800
 
-        // Allow limited out-of-batch writes
         private const val MAX_EXTRA_WRITES_ACCEPTED = 24
-
-        // If ALL fails this many times in a row, we disable singles (avoid spam)
         private const val MAX_CONSECUTIVE_ALL_FAILURES = 3
     }
 
     private enum class BatchMode { ALL, TEN, FIVE, ONE }
 
     private val conversation = GeminiConversation()
+
+    // summarization state
+    private var allProjectFiles = listOf<String>()
+    private var fileSummaries = mapOf<String, String>()
+
+    // selection / generation
     private val selectedFilesForModification = mutableListOf<String>()
-    private var lastAppDescriptionForFallback: String = ""
     private var lastAppNameForFallback: String = ""
+    private var lastAppDescriptionForFallback: String = ""
     private var lastFileContextForFallback: String = ""
 
+    // flags
     private var autoBuildAfterApply = false
     private var autoRunAfterBuild = false
     private var hasTriggeredAutoBuild = false
     private var encounteredError = false
     private var anyChangesApplied = false
-
     private var extraWritesAcceptedCount = 0
 
     private fun logViaBridge(message: String) = bridge.appendToLogBridge(message)
 
-    // Prefer faster model for structured steps to reduce latency/timeouts
+    private fun getFastModelForSummarization(): String? {
+        val current = geminiHelper.currentModelIdentifier
+        return when {
+            current.startsWith("gpt-5", true) -> "gpt-5-mini"
+            current.startsWith("gemini-2.5-pro", true) -> "gemini-2.5-flash"
+            else -> null
+        }
+    }
     private fun modelForStructuredSteps(): String? {
         val current = geminiHelper.currentModelIdentifier
         return when {
@@ -74,6 +104,7 @@ class GeminiWorkflowCoordinator(
         }
     }
 
+    // Entry point
     fun startModificationFlow(
         appName: String,
         appDescription: String,
@@ -81,8 +112,7 @@ class GeminiWorkflowCoordinator(
         autoBuild: Boolean = false,
         autoRun: Boolean = false
     ) {
-        val provider =
-            if (geminiHelper.currentModelIdentifier.startsWith("gpt-", ignoreCase = true)) "OpenAI" else "Gemini"
+        val provider = if (geminiHelper.currentModelIdentifier.startsWith("gpt-", ignoreCase = true)) "OpenAI" else "Gemini"
         logViaBridge("AI Workflow ($provider): Starting for project '$appName'\n")
 
         conversation.clear()
@@ -100,208 +130,150 @@ class GeminiWorkflowCoordinator(
         lastAppNameForFallback = appName
         lastAppDescriptionForFallback = appDescription
 
-        // CORRECTED: Call the service via the interface
-        serviceManager.startService(bridge.getContextBridge(), "Generating code for $appName")
+        AiForegroundService.start(bridge.getContextBridge(), "Analyzing project for $appName")
 
-        bridge.updateStateBridge(AiWorkflowState.SELECTING_FILES)
-        identifyFilesToModify(appName, appDescription, projectDir)
-    }
+        allProjectFiles = ProjectFileUtils.scanProjectFiles(projectDir)
 
-    private fun identifyFilesToModify(appName: String, appDescription: String, projectDir: File) {
-        logViaBridge("AI Workflow Step: Identifying files to modify/create...\n")
-        // CORRECTED: Use the fileScanner interface instead of the static class
-        val files = fileScanner.scanProjectFiles(projectDir)
-
-        bridge.runOnUiThreadBridge {
-            if (files.isEmpty() && !bridge.isModifyingExistingProjectBridge) {
-                encounteredError = true
-                bridge.handleErrorBridge(
-                    "No code files found in the newly created project template. Cannot proceed.",
-                    null
-                )
-                // CORRECTED: Call the service via the interface
-                serviceManager.stopService(bridge.getContextBridge())
-                return@runOnUiThreadBridge
-            } else if (files.isEmpty() && bridge.isModifyingExistingProjectBridge) {
-                logViaBridge("No existing code files found by scanner in '$appName'. AI will be prompted to create necessary files.\n")
-            } else {
-                logViaBridge("Found ${files.size} potentially relevant files in the project.\n")
-            }
-            sendGeminiFileSelectionPrompt(appName, appDescription, files)
-        }
-    }
-
-    private fun buildFileListPreview(files: List<String>, projectDir: File): String {
-        if (files.isEmpty()) return "No existing editable files were found in this project. You might need to create all necessary files from scratch."
-
-        val textLikeExt = setOf("kt", "java", "kts", "gradle", "xml", "txt", "md", "pro", "properties")
-        var remaining = SELECTION_TOTAL_PREVIEW_BUDGET
-        val sb = StringBuilder()
-        for (path in files) {
-            if (remaining <= 0) break
-            sb.append("- ").append(path).append('\n')
-            try {
-                val f = File(projectDir, path)
-                val ext = path.substringAfterLast('.', "").lowercase()
-                if (f.exists() && f.isFile && ext in textLikeExt) {
-                    val preview = readPreview(f, max(SELECTION_PER_FILE_PREVIEW, 200))
-                    if (preview.isNotBlank()) {
-                        val block = "```$ext\n$preview\n```\n"
-                        val take = block.take(remaining)
-                        sb.append(take)
-                        remaining -= take.length
-                    } else {
-                        sb.append("```").append(ext).append("\n").append("(empty or unreadable)\n```\n")
-                    }
-                } else {
-                    sb.append("```").append(ext).append("\n").append("(binary or unsupported; preview omitted)\n```\n")
-                }
-            } catch (_: Throwable) {
-                sb.append("```txt\n").append("(error reading preview)\n```\n")
-            }
-        }
-        return sb.toString()
-    }
-
-    private fun readPreview(file: File, limit: Int): String {
-        return try {
-            FileReader(file).use { fr ->
-                val buf = CharArray(limit)
-                val read = fr.read(buf, 0, limit)
-                if (read > 0) String(buf, 0, read) else ""
-            }
-        } catch (_: Throwable) { "" }
-    }
-
-    private fun sendGeminiFileSelectionPrompt(appName: String, appDescription: String, files: List<String>) {
-        val projectDir = bridge.currentProjectDirBridge
-        val fileListText = if (files.isNotEmpty() && projectDir != null) {
-            buildFileListPreview(files, projectDir)
-        } else if (files.isNotEmpty()) {
-            files.joinToString("\n") { "- $it" }
+        if (allProjectFiles.isEmpty()) {
+            logViaBridge("Project is empty. Asking AI to generate initial files.\n")
+            bridge.updateStateBridge(AiWorkflowState.CREATING_PROJECT_TEMPLATE)
+            generateInitialFilesFromDescription(appName, appDescription, attempt = 0)
         } else {
-            "No existing editable files were found in this project. You might need to create all necessary files from scratch."
+            logViaBridge("Found ${allProjectFiles.size} files. Requesting summaries from a fast LLM...\n")
+            bridge.updateStateBridge(AiWorkflowState.SUMMARIZING_FILES)
+            requestFileSummaries()
         }
+    }
 
-        val isExisting = bridge.isModifyingExistingProjectBridge
-        val promptContext = if (isExisting) "modifying an existing Android app" else "working with a basic Android app template I just created"
-        val actionVerb = if (isExisting) "MODIFY or CREATE" else "CREATE or significantly MODIFY"
+    // --- STEP 1: Summarization ---
+    private fun requestFileSummaries() {
+        val projectDir = bridge.currentProjectDirBridge ?: run {
+            handleError("Project directory is null before summarization.", null)
+            return
+        }
+        val sb = StringBuilder("Generate a concise, one-sentence summary for each file. Respond ONLY with a JSON object matching the provided schema.\n\n")
+        for (path in allProjectFiles) {
+            try {
+                val content = FileReader(File(projectDir, path)).use { it.readText() }
+                sb.append("--- FILE: $path ---\n```\n$content\n```\n\n")
+            } catch (_: IOException) {
+                logViaBridge("⚠️ Could not read file $path for summarization. Skipping.\n")
+            }
+        }
+        conversation.addUserMessage(sb.toString())
+        val overrideModel = getFastModelForSummarization()
 
-        val prompt = """
-            I am $promptContext called "$appName".
-            The main goal for this app is: "$appDescription"
+        geminiHelper.sendApiRequest(
+            contents = conversation.getContentsForApi(),
+            callback = ::handleFileSummariesResponse,
+            modelIdentifierOverride = overrideModel,
+            responseSchemaJson = geminiHelper.getSummariesSchema()
+        )
+    }
 
-            Below is a file index with small content previews from the project (trimmed for brevity):
-            $fileListText
+    private fun handleFileSummariesResponse(response: JSONObject) {
+        val responseText = geminiHelper.extractTextFromApiResponse(response)
+        try {
+            val root = JSONObject(responseText).unwrapDataIfPresent()
+            val arr = root.getJSONArray("file_summaries")
+            val summariesMap = mutableMapOf<String, String>()
+            for (i in 0 until arr.length()) {
+                val item = arr.getJSONObject(i)
+                val path = item.optString("file_path", "").ifBlank { item.optString("filePath", "") }
+                val summary = item.optString("summary", "")
+                if (path.isNotBlank()) summariesMap[path] = summary
+            }
+            this.fileSummaries = summariesMap
+            logViaBridge("✅ Summaries received for ${summariesMap.size} files.\n")
+            conversation.addModelMessage(responseText)
 
-            Based on the app's goal and these previews, which files would MOST LIKELY need to be $actionVerb to achieve the goal?
-            - If previews show hardcoded strings or outdated text, include those files.
-            - If the list is incomplete or a file clearly must be created, include its relative path.
+            bridge.updateStateBridge(AiWorkflowState.SELECTING_FILES)
+            requestFileSelectionFromSummaries()
+        } catch (e: Exception) {
+            handleError("Failed to parse file summaries from LLM: ${e.message}", e)
+        }
+    }
 
-            Respond ONLY with a JSON array of the relative file paths. Example:
-            ["app/src/main/java/com/example/myapp/MainActivity.kt", "app/src/main/res/layout/activity_main.xml"]
-        """.trimIndent()
-
+    // --- STEP 2: Selection based on summaries ---
+    private fun requestFileSelectionFromSummaries() {
+        val prompt = buildString {
+            append("My goal is to implement the following feature in the '$lastAppNameForFallback' app:\n\"$lastAppDescriptionForFallback\"\n\n")
+            append("Here is a list of project files and their concise summaries:\n")
+            fileSummaries.forEach { (path, summary) -> append("- `$path`: $summary\n") }
+            append("\nBased on my goal, which files do you need to see the full content of to begin? Respond ONLY with a JSON array of file paths.\n")
+        }
         conversation.addUserMessage(prompt)
-        logViaBridge("Asking AI to select relevant files (expecting JSON array)...\n")
 
         geminiHelper.sendApiRequest(
             contents = conversation.getContentsForApi(),
             callback = { response ->
                 try {
                     val responseText = geminiHelper.extractTextFromApiResponse(response)
-                    Log.d(TAG, "Raw AI file selection response: $responseText")
-                    logViaBridge("AI file selection response received.\n")
-                    val jsonArrayText = geminiHelper.extractJsonArrayFromText(responseText)
-                    val jsonArray = JSONArray(jsonArrayText)
-                    selectedFilesForModification.clear()
-                    for (i in 0 until jsonArray.length()) {
-                        jsonArray.getString(i).takeIf { it.isNotBlank() }?.let { selectedFilesForModification.add(it) }
+                    val jsonArray = JSONArray(geminiHelper.extractJsonArrayFromText(responseText))
+                    val selected = List(jsonArray.length()) { jsonArray.getString(it) }.filter { it.isNotBlank() }
+
+                    if (selected.isEmpty()) {
+                        logViaBridge("AI did not select any files. Will try to generate from description.\n")
+                        generateInitialFilesFromDescription(lastAppNameForFallback, lastAppDescriptionForFallback, 0)
+                    } else {
+                        logViaBridge("AI selected ${selected.size} files. Proceeding to generate code...\n")
+                        selectedFilesForModification.clear()
+                        selectedFilesForModification.addAll(selected)
+                        loadSelectedFilesAndGenerateInBatches(lastAppNameForFallback, lastAppDescriptionForFallback)
                     }
                     conversation.addModelMessage(responseText)
-
-                    if (selectedFilesForModification.isEmpty()) {
-                        logViaBridge("⚠️ AI did not select/suggest any files. Will attempt initial generation directly from description.\n")
-                    } else {
-                        logViaBridge("AI selected/suggested ${selectedFilesForModification.size} files:\n${selectedFilesForModification.joinToString("\n") { "  - $it" }}\n")
-                    }
-                    loadSelectedFilesAndGenerateInBatches(appName, appDescription)
                 } catch (e: Exception) {
-                    encounteredError = true
-                    val rawResponse = geminiHelper.extractTextFromApiResponse(response)
-                    val errorMessage = when (e) {
-                        is IllegalArgumentException -> "AI did not provide a valid list of files for selection: ${e.message}. Response: $rawResponse"
-                        is JSONException -> "Failed to parse AI's file selection as JSON: ${e.message}. Response: $rawResponse"
-                        else -> "Unexpected error during file selection: ${e.message}"
-                    }
-                    bridge.handleErrorBridge(errorMessage, e)
-                    // CORRECTED: Call the service via the interface
-                    serviceManager.stopService(bridge.getContextBridge())
+                    handleError("Failed to parse file selection from LLM: ${e.message}", e)
                 }
             },
             responseMimeTypeOverride = "application/json"
         )
     }
 
+    // --- Loading selected files and batching ---
     private fun loadSelectedFilesAndGenerateInBatches(appName: String, appDescription: String) {
         val projectDir = bridge.currentProjectDirBridge ?: run {
-            encounteredError = true
-            bridge.handleErrorBridge("Project directory is null before batching generation.", null)
-            // CORRECTED: Call the service via the interface
-            serviceManager.stopService(bridge.getContextBridge())
+            handleError("Project directory is null before batching generation.", null)
             return
         }
-
         bridge.updateStateBridge(AiWorkflowState.GENERATING_CODE)
-        logViaBridge("AI Workflow Step: Loading selected files for batched code generation...\n")
+        logViaBridge("Loading ${selectedFilesForModification.size} selected files for batched code generation...\n")
         val fileContentsMap = mutableMapOf<String, String>()
 
         for (filePath in selectedFilesForModification) {
-            val file = File(projectDir, filePath)
-            if (!file.exists() || !file.isFile) {
-                logViaBridge("Note: File '$filePath' not found. Will ask AI to create it.\n")
-                fileContentsMap[filePath] = "// File: $filePath (This file is new or was not found. Please provide its complete content based on the app description.)"
+            val f = File(projectDir, filePath)
+            if (!f.exists() || !f.isFile) {
+                logViaBridge("Note: File '$filePath' not found. AI will be asked to create it.\n")
+                fileContentsMap[filePath] = "// File: $filePath (This file is new or was not found. Please provide its complete content.)"
             } else {
                 try {
-                    fileContentsMap[filePath] = FileReader(file).use { it.readText() }
+                    fileContentsMap[filePath] = FileReader(f).use { it.readText() }
                 } catch (e: IOException) {
-                    logViaBridge("⚠️ Error reading file $filePath: ${e.message}. Will ask AI to provide content.\n")
-                    fileContentsMap[filePath] = "// File: $filePath (Error reading existing content. Please regenerate based on the app description and its intended role.)"
+                    logViaBridge("⚠️ Error reading file $filePath: ${e.message}. AI will be asked to regenerate.\n")
+                    fileContentsMap[filePath] = "// File: $filePath (Error reading existing content. Please regenerate based on its intended role.)"
                 }
             }
         }
 
         if (fileContentsMap.isEmpty()) {
-            logViaBridge("No files were selected by AI (or project is empty). Asking AI to generate essential files from description...\n")
-            generateInitialFilesFromDescription(appName, appDescription, attempt = 0)
+            logViaBridge("No valid files were loaded. Attempting to generate from description...\n")
+            generateInitialFilesFromDescription(appName, appDescription, 0)
             return
-        } else {
-            logViaBridge("Loaded/identified ${fileContentsMap.size} files for AI processing (batched).\n")
         }
 
         val id = geminiHelper.currentModelIdentifier.lowercase()
-        val batchCharBudget =
-            if (id.contains("gpt-5-mini") || id.contains("gpt-5-nano")) BUDGET_MINI_CHARS else BUDGET_BIG_CHARS
+        val batchCharBudget = if (id.contains("gpt-5-mini") || id.contains("gpt-5-nano")) BUDGET_MINI_CHARS else BUDGET_BIG_CHARS
 
         generateInBatches(appName, appDescription, fileContentsMap, batchCharBudget)
     }
 
     private fun generateInitialFilesFromDescription(appName: String, appDescription: String, attempt: Int) {
         val projectDir = bridge.currentProjectDirBridge ?: run {
-            encounteredError = true
-            bridge.handleErrorBridge("Project directory is null before initial generation.", null)
-            // CORRECTED: Call the service via the interface
-            serviceManager.stopService(bridge.getContextBridge())
+            handleError("Project directory is null before initial generation.", null)
             return
         }
-
-        // CORRECTED: Use the fileScanner interface instead of the static class
-        val existingFiles = fileScanner.scanProjectFiles(projectDir)
-        val existingListText = if (existingFiles.isNotEmpty()) {
-            existingFiles.joinToString("\n") { "- $it" }
-        } else {
-            "(no existing files)"
-        }
+        val existingFiles = ProjectFileUtils.scanProjectFiles(projectDir)
+        val existingListText = if (existingFiles.isNotEmpty()) existingFiles.joinToString("\n") { "- $it" } else "(no existing files)"
 
         val prompt = """
             You are creating/updating an Android application named "$appName".
@@ -331,7 +303,7 @@ class GeminiWorkflowCoordinator(
                     val txt = geminiHelper.extractTextFromApiResponse(response)
                     Log.i(TAG, "Initial generation JSON (first 512 chars): ${txt.take(512)}")
                     val filesMap = geminiHelper.parseMinimalFilesResponse(txt)
-                    if (filesMap != null && filesMap.isNotEmpty()) {
+                    if (!filesMap.isNullOrEmpty()) {
                         logViaBridge("AI proposed ${filesMap.size} initial file(s) from description.\n")
                         applyCodeChangesAndOrGetSummary(FileModifications(filesMap, emptyList(), null))
                     } else {
@@ -339,17 +311,11 @@ class GeminiWorkflowCoordinator(
                             logViaBridge("⚠️ AI returned no files for initial generation. Retrying...\n")
                             generateInitialFilesFromDescription(appName, appDescription, attempt + 1)
                         } else {
-                            encounteredError = true
-                            bridge.handleErrorBridge("AI did not produce any files to write after retries.", null)
-                            // CORRECTED: Call the service via the interface
-                            serviceManager.stopService(bridge.getContextBridge())
+                            handleError("AI did not produce any files to write after retries.", null)
                         }
                     }
                 } catch (e: Exception) {
-                    encounteredError = true
-                    bridge.handleErrorBridge("Error during initial file generation: ${e.message}", e)
-                    // CORRECTED: Call the service via the interface
-                    serviceManager.stopService(bridge.getContextBridge())
+                    handleError("Error during initial file generation: ${e.message}", e)
                 }
             },
             responseSchemaJson = geminiHelper.getMinimalFilesSchema(),
@@ -358,9 +324,7 @@ class GeminiWorkflowCoordinator(
         )
     }
 
-    private fun estimateCharsForFile(path: String, content: String): Int {
-        return path.length + content.length + 128
-    }
+    private fun estimateCharsForFile(path: String, content: String): Int = path.length + content.length + 128
 
     private fun buildBatchesBySize(
         paths: List<String>,
@@ -394,12 +358,46 @@ class GeminiWorkflowCoordinator(
         maxCharsPerBatch: Int
     ): ArrayDeque<List<String>> {
         return when (mode) {
-            BatchMode.ALL -> ArrayDeque<List<String>>().apply {
-                if (remaining.isNotEmpty()) addLast(remaining.toList())
-            }
+            BatchMode.ALL -> ArrayDeque<List<String>>().apply { if (remaining.isNotEmpty()) addLast(remaining.toList()) }
             BatchMode.TEN -> buildBatchesBySize(remaining, filesMap, maxCharsPerBatch, FILES_PER_BATCH_10)
             BatchMode.FIVE -> buildBatchesBySize(remaining, filesMap, maxCharsPerBatch, FILES_PER_BATCH_5)
             BatchMode.ONE -> buildBatchesBySize(remaining, filesMap, maxCharsPerBatch, FILES_PER_BATCH_1)
+        }
+    }
+
+    // Parse modifications + optional requestMoreFiles
+    private fun parseFileModificationsWithRequestMore(jsonText: String): Pair<FileModifications?, List<String>?> {
+        try {
+            val root = JSONObject(jsonText).unwrapDataIfPresent()
+            val filesMap = mutableMapOf<String, String>()
+            root.optJSONArrayByKeys("filesToWrite", "files_to_write")?.forEachObject { obj ->
+                val path = obj.optStringByKeys("filePath", "file_path") ?: ""
+                val content = obj.optStringByKeys("fileContent", "file_content") ?: ""
+                if (path.isNotBlank()) filesMap[path] = content
+            }
+
+            val filesToDelete = mutableListOf<String>()
+            root.optJSONArrayByKeys("filesToDelete", "files_to_delete")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val s = arr.optString(i)
+                    if (!s.isNullOrBlank()) filesToDelete.add(s)
+                }
+            }
+
+            val conclusion = root.optStringByKeys("conclusion", "summary", "conclusionText")?.takeIf { it.isNotBlank() }
+            val requestMore = mutableListOf<String>()
+            root.optJSONArrayByKeys("requestMoreFiles", "request_more_files", "request_more_files_paths")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val s = arr.optString(i)
+                    if (!s.isNullOrBlank()) requestMore.add(s)
+                }
+            }
+
+            val fm = FileModifications(filesToWrite = filesMap, filesToDelete = filesToDelete, conclusion = conclusion)
+            return fm to if (requestMore.isNotEmpty()) requestMore else null
+        } catch (e: JSONException) {
+            Log.e(TAG, "Error parsing FileModifications JSON: '$jsonText'. Error: ${e.message}", e)
+            return null to null
         }
     }
 
@@ -416,7 +414,6 @@ class GeminiWorkflowCoordinator(
         var currentMode = BatchMode.ALL
         var consecutiveAllFailures = 0
         var singlesAllowed = true
-
         var pendingBatches = makePendingForMode(remainingPaths, currentMode, fileContentsMap, maxCharsPerBatch)
 
         fun promptForBatch(paths: List<String>): String {
@@ -434,36 +431,37 @@ class GeminiWorkflowCoordinator(
                 Primary scope for THIS batch is the files listed below:
                 $filesContentText
 
-                Respond with a single JSON object:
+                Respond with a single JSON object following the schema:
                 {
                   "filesToWrite": [
                     { "filePath": "<one of the listed paths OR a small number of additional necessary files>", "fileContent": "<full content>" }
                   ],
                   "unchanged": [
                     "<every listed path you did NOT change>"
-                  ]
+                  ],
+                  "filesToDelete": [ "<optional file paths to delete>" ],
+                  "requestMoreFiles": [ "<optional additional file paths you need to see to continue; set to [] or omit if done>" ],
+                  "conclusion": "<optional final summary when the entire task is complete>"
                 }
 
                 Rules:
-                - Every file from the listed batch MUST appear exactly once: either in filesToWrite (if you changed it) or in unchanged (if you didn't).
-                - If you discover that a small number of additional existing files MUST be modified to make the change actually take effect (e.g., a layout referencing a string), you MAY include them in filesToWrite too.
-                - Keep any additional files minimal and relevant. Avoid unrelated or large refactors.
-                - Do NOT include prose or extra keys.
+                - Every file from the listed batch MUST appear exactly once: either in filesToWrite or in unchanged.
+                - You MAY include a small number of additional existing files in filesToWrite if they are necessary to make the change work.
+                - Keep additional files minimal and relevant. Avoid unrelated or large refactors.
+                - Do NOT include prose outside the JSON.
             """.trimIndent()
         }
 
-        fun applyAndAccount(
-            requested: List<String>,
-            responseText: String
-        ): Pair<Boolean, Set<String>> {
-            val result = geminiHelper.parseMinimalFilesAndUnchanged(responseText) ?: return false to emptySet()
+        fun applyAndAccount(requested: List<String>, responseText: String): Pair<Boolean, Set<String>> {
+            val (mods, _) = parseFileModificationsWithRequestMore(responseText)
+            if (mods == null) return false to emptySet()
 
             // Accept in-scope writes
-            val inScopeWrites = result.filesToWrite.filterKeys { it in requested }
+            val inScopeWrites = mods.filesToWrite.filterKeys { it in requested }
             if (inScopeWrites.isNotEmpty()) aggregatedFiles.putAll(inScopeWrites)
 
-            // Accept limited out-of-scope writes (to make changes effective)
-            val outOfScopeWrites = result.filesToWrite.filterKeys { it !in requested }
+            // Accept limited out-of-scope writes
+            val outOfScopeWrites = mods.filesToWrite.filterKeys { it !in requested }
             if (outOfScopeWrites.isNotEmpty()) {
                 val remainingAllowance = MAX_EXTRA_WRITES_ACCEPTED - extraWritesAcceptedCount
                 if (remainingAllowance > 0) {
@@ -482,7 +480,22 @@ class GeminiWorkflowCoordinator(
                 }
             }
 
-            val accountedSet = (result.filesToWrite.keys + result.unchanged.toSet()).toSet()
+            // Determine accounted set
+            val accountedSet = mutableSetOf<String>()
+            accountedSet.addAll(mods.filesToWrite.keys)
+            accountedSet.addAll(mods.filesToDelete)
+
+            // also include unchanged from responseText if present
+            try {
+                val root = JSONObject(responseText).unwrapDataIfPresent()
+                root.optJSONArrayByKeys("unchanged")?.let { arr ->
+                    for (i in 0 until arr.length()) {
+                        val s = arr.optString(i)
+                        if (!s.isNullOrBlank()) accountedSet.add(s)
+                    }
+                }
+            } catch (_: Exception) { /* ignore */ }
+
             val accountedInRequested = requested.filter { it in accountedSet }.toSet()
             val fullSuccess = accountedInRequested.size == requested.size
             return fullSuccess to accountedInRequested
@@ -495,19 +508,14 @@ class GeminiWorkflowCoordinator(
         fun processNextBatch() {
             if (remainingPaths.isEmpty()) {
                 val modifications = FileModifications(aggregatedFiles, emptyList(), null)
-                if (aggregatedFiles.isEmpty()) {
-                    logViaBridge("No files were generated/changed in batched flow.\n")
-                } else {
-                    logViaBridge("Batched generation produced ${aggregatedFiles.size} file(s).\n")
-                }
+                if (aggregatedFiles.isEmpty()) logViaBridge("No files were generated/changed in batched flow.\n")
+                else logViaBridge("Batched generation produced ${aggregatedFiles.size} file(s).\n")
                 applyCodeChangesAndOrGetSummary(modifications)
                 return
             }
-
             if (pendingBatches.isEmpty()) {
                 rebuildPending()
                 if (pendingBatches.isEmpty()) {
-                    // Nothing more to schedule
                     val modifications = FileModifications(aggregatedFiles, emptyList(), null)
                     applyCodeChangesAndOrGetSummary(modifications)
                     return
@@ -524,90 +532,87 @@ class GeminiWorkflowCoordinator(
                     try {
                         val responseText = geminiHelper.extractTextFromApiResponse(response)
                         if (responseText.isBlank()) {
-                            // Treat as failure of current mode
                             if (currentMode == BatchMode.ALL) {
                                 consecutiveAllFailures++
-                                if (consecutiveAllFailures >= MAX_CONSECUTIVE_ALL_FAILURES) {
-                                    singlesAllowed = false // don't go to singles anymore
-                                }
-                                // drop to 10
+                                if (consecutiveAllFailures >= MAX_CONSECUTIVE_ALL_FAILURES) singlesAllowed = false
                                 currentMode = BatchMode.TEN
-                                rebuildPending()
-                            } else if (currentMode == BatchMode.TEN) {
-                                currentMode = BatchMode.FIVE
-                                rebuildPending()
-                            } else if (currentMode == BatchMode.FIVE) {
-                                currentMode = if (singlesAllowed) BatchMode.ONE else BatchMode.ALL
-                                rebuildPending()
-                            } else {
-                                // ONE failed; try ALL again for remaining
-                                currentMode = BatchMode.ALL
-                                rebuildPending()
-                            }
+                            } else if (currentMode == BatchMode.TEN) currentMode = BatchMode.FIVE
+                            else if (currentMode == BatchMode.FIVE) currentMode = if (singlesAllowed) BatchMode.ONE else BatchMode.ALL
+                            else currentMode = BatchMode.ALL
+                            rebuildPending()
                             processNextBatch()
                             return@sendApiRequest
                         }
 
                         val (fullSuccess, accounted) = applyAndAccount(paths, responseText)
-
-                        // Mark accounted as done
                         if (accounted.isNotEmpty()) remainingPaths.removeAll(accounted)
 
-                        // If batch fully accounted, success
-                        if (fullSuccess) {
-                            // Success resets ALL failure counter
-                            if (currentMode == BatchMode.ALL) {
-                                consecutiveAllFailures = 0
+                        // handle requestMoreFiles
+                        val (_, requestMore) = parseFileModificationsWithRequestMore(responseText)
+                        if (requestMore != null && requestMore.isNotEmpty()) {
+                            logViaBridge("ℹ️ LLM requested additional ${requestMore.size} files to continue.\n")
+                            val projectDir = bridge.currentProjectDirBridge
+                            if (projectDir != null) {
+                                val newFilesMap = mutableMapOf<String, String>()
+                                for (p in requestMore) {
+                                    val f = File(projectDir, p)
+                                    if (!f.exists() || !f.isFile) {
+                                        logViaBridge("Note: Requested additional file '$p' not found; will request LLM to create it if needed.\n")
+                                        newFilesMap[p] = "// File: $p (This file is new or was not found. Please provide its complete content.)"
+                                    } else {
+                                        try {
+                                            newFilesMap[p] = FileReader(f).use { it.readText() }
+                                        } catch (e: IOException) {
+                                            logViaBridge("⚠️ Error reading requested additional file $p: ${e.message}. Asking LLM to regenerate.\n")
+                                            newFilesMap[p] = "// File: $p (Error reading existing content. Please regenerate.)"
+                                        }
+                                    }
+                                }
+                                // Merge for next run
+                                val merged = linkedMapOf<String, String>()
+                                merged.putAll(fileContentsMap)
+                                merged.putAll(newFilesMap)
+                                for (nf in newFilesMap.keys) if (!remainingPaths.contains(nf)) remainingPaths.add(nf)
+                                generateInBatches(appName, appDescription, merged, maxCharsPerBatch)
+                                return@sendApiRequest
                             } else {
-                                // Climb back to ALL after any successful smaller batch
+                                logViaBridge("⚠️ Project dir null while attempting to load additional requested files.\n")
+                            }
+                        }
+
+                        // adjust batch mode
+                        if (fullSuccess) {
+                            if (currentMode == BatchMode.ALL) consecutiveAllFailures = 0
+                            else {
                                 currentMode = BatchMode.ALL
                                 rebuildPending()
                             }
                         } else {
-                            // Partial or no success for this batch -> adjust mode
                             if (currentMode == BatchMode.ALL) {
                                 consecutiveAllFailures++
-                                if (consecutiveAllFailures >= MAX_CONSECUTIVE_ALL_FAILURES) {
-                                    singlesAllowed = false
-                                }
+                                if (consecutiveAllFailures >= MAX_CONSECUTIVE_ALL_FAILURES) singlesAllowed = false
                                 currentMode = BatchMode.TEN
-                                rebuildPending()
-                            } else if (currentMode == BatchMode.TEN) {
-                                currentMode = BatchMode.FIVE
-                                rebuildPending()
-                            } else if (currentMode == BatchMode.FIVE) {
-                                currentMode = if (singlesAllowed) BatchMode.ONE else BatchMode.ALL
-                                rebuildPending()
-                            } else {
-                                // ONE failed/partial -> try ALL again for remaining
-                                currentMode = BatchMode.ALL
-                                rebuildPending()
-                            }
+                            } else if (currentMode == BatchMode.TEN) currentMode = BatchMode.FIVE
+                            else if (currentMode == BatchMode.FIVE) currentMode = if (singlesAllowed) BatchMode.ONE else BatchMode.ALL
+                            else currentMode = BatchMode.ALL
+                            rebuildPending()
                         }
-
                         processNextBatch()
                     } catch (e: Exception) {
                         encounteredError = true
                         logViaBridge("⚠️ Error processing batch response: ${e.message}. Switching mode and continuing.\n")
-                        // Adjust mode on exception similar to blank case
                         if (currentMode == BatchMode.ALL) {
                             consecutiveAllFailures++
-                            if (consecutiveAllFailures >= MAX_CONSECUTIVE_ALL_FAILURES) {
-                                singlesAllowed = false
-                            }
+                            if (consecutiveAllFailures >= MAX_CONSECUTIVE_ALL_FAILURES) singlesAllowed = false
                             currentMode = BatchMode.TEN
-                        } else if (currentMode == BatchMode.TEN) {
-                            currentMode = BatchMode.FIVE
-                        } else if (currentMode == BatchMode.FIVE) {
-                            currentMode = if (singlesAllowed) BatchMode.ONE else BatchMode.ALL
-                        } else {
-                            currentMode = BatchMode.ALL
-                        }
+                        } else if (currentMode == BatchMode.TEN) currentMode = BatchMode.FIVE
+                        else if (currentMode == BatchMode.FIVE) currentMode = if (singlesAllowed) BatchMode.ONE else BatchMode.ALL
+                        else currentMode = BatchMode.ALL
                         rebuildPending()
                         processNextBatch()
                     }
                 },
-                responseSchemaJson = geminiHelper.getMinimalFilesWithUnchangedSchema(),
+                responseSchemaJson = geminiHelper.getFileModificationsSchema(),
                 responseMimeTypeOverride = "application/json",
                 modelIdentifierOverride = overrideModel
             )
@@ -616,12 +621,10 @@ class GeminiWorkflowCoordinator(
         processNextBatch()
     }
 
+    // --- Apply changes and summary ---
     private fun applyCodeChangesAndOrGetSummary(modifications: FileModifications) {
         val projectDir = bridge.currentProjectDirBridge ?: run {
-            encounteredError = true
-            bridge.handleErrorBridge("Project directory is null before applying changes.", null)
-            // CORRECTED: Call the service via the interface
-            serviceManager.stopService(bridge.getContextBridge())
+            handleError("Project directory is null before applying changes.", null)
             return
         }
 
@@ -631,7 +634,7 @@ class GeminiWorkflowCoordinator(
         }
 
         if (modifications.filesToWrite.isNotEmpty() || filteredFilesToDelete.isNotEmpty()) {
-            logViaBridge("AI Workflow Step: Applying code changes and deletions...\n")
+            logViaBridge("AI Workflow: Applying code changes and deletions...\n")
             ProjectFileUtils.processFileChangesAndDeletions(
                 projectDir, modifications.filesToWrite, filteredFilesToDelete, directLogAppender
             ) { writeSuccessCount, writeErrorCount, deleteSuccessCount, deleteErrorCount ->
@@ -767,17 +770,68 @@ class GeminiWorkflowCoordinator(
         val projectDir = bridge.currentProjectDirBridge
         val okToAutoBuild = !encounteredError && anyChangesApplied && projectDir != null
 
-        // CORRECTED: Call the service via the interface
-        serviceManager.stopService(bridge.getContextBridge())
+        AiForegroundService.stop(bridge.getContextBridge())
 
         if (autoBuildAfterApply && okToAutoBuild && !hasTriggeredAutoBuild) {
             hasTriggeredAutoBuild = true
             bridge.triggerBuildBridge(projectDir!!, runAfterBuild = autoRunAfterBuild)
         } else {
             if (!autoBuildAfterApply) logViaBridge("ℹ️ Auto-build disabled; waiting for user action.\n")
-            if (encounteredError) logViaBridge("⛔ Skipping auto-build due to an earlier error in the AI flow.\n")
+            if (encounteredError) logViaBridge("✖️ Skipping auto-build due to an earlier error in the AI flow.\n")
             if (!anyChangesApplied) logViaBridge("ℹ️ Skipping auto-build because no code changes were applied.\n")
-            if (projectDir == null) logViaBridge("⛔ Skipping auto-build: projectDir is null.\n")
+            if (projectDir == null) logViaBridge("✖️ Skipping auto-build: projectDir is null.\n")
         }
+    }
+
+    // --- Build & Fix loop ---
+    fun handleBuildResult(success: Boolean, buildOutput: String) {
+        if (success) {
+            logViaBridge("🎉 Build Successful! Workflow complete.\n")
+            bridge.updateStateBridge(AiWorkflowState.IDLE)
+            return
+        }
+
+        logViaBridge("Build failed. Asking AI to analyze the error...\n")
+        bridge.updateStateBridge(AiWorkflowState.ANALYZING_BUILD_ERROR)
+
+        val prompt = """
+            The build failed. Here is the build output:
+
+            ```
+            $buildOutput
+            ```
+
+            Given this error and the project file summaries (if available), which files do you need to see in full to fix the issue? Respond ONLY with a JSON array of file paths.
+        """.trimIndent()
+
+        conversation.addUserMessage(prompt)
+        geminiHelper.sendApiRequest(
+            contents = conversation.getContentsForApi(),
+            callback = { response ->
+                try {
+                    val responseText = geminiHelper.extractTextFromApiResponse(response)
+                    val jsonArray = JSONArray(geminiHelper.extractJsonArrayFromText(responseText))
+                    val selectedFiles = List(jsonArray.length()) { jsonArray.getString(it) }
+
+                    if (selectedFiles.isEmpty()) {
+                        finishAndMaybeBuild("AI analyzed the build error but did not suggest any file modifications.")
+                    } else {
+                        logViaBridge("AI selected ${selectedFiles.size} files to fix the build error.\n")
+                        selectedFilesForModification.clear()
+                        selectedFilesForModification.addAll(selectedFiles)
+                        loadSelectedFilesAndGenerateInBatches(lastAppNameForFallback, "Fix the build error: $buildOutput")
+                    }
+                } catch (e: JSONException) {
+                    handleError("Failed to parse file selection from LLM during fix attempt: ${e.message}", e)
+                }
+            },
+            responseMimeTypeOverride = "application/json"
+        )
+    }
+
+    private fun handleError(message: String, e: Exception?) {
+        encounteredError = true
+        bridge.handleErrorBridge(message, e)
+        AiForegroundService.stop(bridge.getContextBridge())
     }
 }

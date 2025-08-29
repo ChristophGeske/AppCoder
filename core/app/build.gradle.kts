@@ -166,16 +166,10 @@ dependencies {
   // For the LLM integration with Gemini
   implementation("com.squareup.okhttp3:okhttp:4.10.0")
 
-
-  // --- FOKUSSIERTE TEST-ABHÄNGIGKEITEN ---
-
-  // Basis-Abhängigkeiten aus Ihrem Projekt
+  // --- Focused test dependencies ---
   testImplementation(projects.testing.unitTest)
   androidTestImplementation(projects.testing.androidTest)
 
-  // Mocking-Bibliothek für unseren neuen, einfachen Test
   testImplementation("io.mockk:mockk:1.13.10")
-
-  // Erforderlich für die Verwendung von JSONObject in Unit-Tests
   testImplementation("org.json:json:20231013")
 }

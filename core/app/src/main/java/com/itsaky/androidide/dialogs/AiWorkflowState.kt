@@ -1,29 +1,29 @@
-/*
- *  This file is part of AndroidIDE.
- *
- *  AndroidIDE is free software: you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation, either version 3 of the License, or
- *  (at your option) any later version.
- *
- *  AndroidIDE is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *   along with AndroidIDE.  If not, see <https://www.gnu.org/licenses/>.
- */
-
 package com.itsaky.androidide.dialogs
 
 enum class AiWorkflowState {
     IDLE,
+
+    // --- PROJECT SETUP PHASE (From your original flow) ---
     CREATING_PROJECT_TEMPLATE,
     PREPARING_EXISTING_PROJECT,
+
+    // --- AI INTERACTION PHASE (New + Original) ---
+    // New states for the initial analysis
+    SUMMARIZING_FILES,
+    // Original state, now used after summarization
     SELECTING_FILES,
+    // Original state for the main code generation
     GENERATING_CODE,
-    GENERATING_SUMMARY, // Added for clarity during summary generation
+    // Original state for the final summary
+    GENERATING_SUMMARY,
+
+    // State indicating the AI is done and waiting for the user to build
     READY_FOR_ACTION,
+
+    // --- BUILD & FIX LOOP PHASE ---
+    AWAITING_BUILD_RESULT,
+    ANALYZING_BUILD_ERROR,
+
+    // --- FINAL STATES ---
     ERROR
 }
