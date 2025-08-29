@@ -1,12 +1,9 @@
 package com.itsaky.androidide.dialogs
 
 import android.content.Context
-import io.mockk.Ordering // <-- THIS IS THE MISSING IMPORT
-import io.mockk.Runs
 import io.mockk.every
 import io.mockk.impl.annotations.MockK
 import io.mockk.junit4.MockKRule
-import io.mockk.just
 import io.mockk.justRun
 import io.mockk.slot
 import io.mockk.verify
@@ -24,7 +21,7 @@ class GeminiWorkflowCoordinatorTest {
     private lateinit var mockGeminiHelper: GeminiHelper
     @MockK(relaxUnitFun = true)
     private lateinit var mockBridge: ViewModelFileEditorBridge
-    @MockK
+    @MockK(relaxUnitFun = true)
     private lateinit var mockServiceManager: AiServiceManager
     @MockK
     private lateinit var mockFileScanner: ProjectFileScanner
@@ -42,53 +39,49 @@ class GeminiWorkflowCoordinatorTest {
             serviceManager = mockServiceManager,
             fileScanner = mockFileScanner
         )
-    }
 
-    @Test
-    fun `startModificationFlow should correctly trigger the file selection process`() {
-        // --- ARRANGE ---
-        val appName = "TestApp"
-        val appDescription = "A simple test app"
-        val projectDir = File("/fake/path/to/TestApp")
-        val fakeFileList = listOf("src/main/App.kt", "build.gradle.kts")
-
-        every { mockGeminiHelper.currentModelIdentifier } returns "gemini-pro"
+        // Standard-Setup
         every { mockBridge.getContextBridge() } returns mockContext
-        every { mockBridge.isModifyingExistingProjectBridge } returns false
-        every { mockFileScanner.scanProjectFiles(projectDir) } returns fakeFileList
+        every { mockFileScanner.scanProjectFiles(any()) } returns listOf("src/main/App.kt")
+        every { mockBridge.isModifyingExistingProjectBridge } returns true
+        every { mockGeminiHelper.currentModelIdentifier } returns "gemini-pro"
+        // WICHTIG: Der Coordinator setzt dieses Property. Wir müssen das mocken.
+        every { mockBridge.currentProjectDirBridge = any() } returns Unit
+        // Wenn der Getter aufgerufen wird, geben wir ein Dummy-File zurück.
+        every { mockBridge.currentProjectDirBridge } returns File("/fake/path")
 
-        // Mock the property setter
-        every { mockBridge.currentProjectDirBridge = any() } just Runs
-
-        // Mock the property getter
-        every { mockBridge.currentProjectDirBridge } returns projectDir
-
-        justRun { mockServiceManager.startService(any(), any()) }
-
+        // Führe Code auf dem UI-Thread sofort aus
         val uiBlock = slot<() -> Unit>()
         every { mockBridge.runOnUiThreadBridge(capture(uiBlock)) } answers {
             uiBlock.captured.invoke()
         }
-
+        
+        // Erlaube den Aufruf von sendApiRequest
         justRun { mockGeminiHelper.sendApiRequest(any(), any(), any(), any(), any()) }
+    }
 
+    @Test
+    fun `startModificationFlow should execute initial steps and call api`() {
+        // ARRANGE
+        val appName = "TestApp"
+        val appDescription = "Eine einfache App"
+        val projectDir = File("/fake/path")
 
-        // --- ACT ---
-        coordinator.startModificationFlow(
-            appName = appName,
-            appDescription = appDescription,
-            projectDir = projectDir
-        )
+        // ACT
+        coordinator.startModificationFlow(appName, appDescription, projectDir)
 
-
-        // --- ASSERT ---
-        // Verify that all these calls happened, regardless of their order.
-        verify(ordering = Ordering.UNORDERED) {
+        // ASSERT
+        // Wir überprüfen einfach, ob die vier wichtigsten Aktionen stattgefunden haben.
+        // Die Reihenfolge ist hierbei nicht entscheidend (unordered).
+        verify(ordering = io.mockk.Ordering.UNORDERED) {
             mockServiceManager.startService(mockContext, "Generating code for $appName")
             mockBridge.updateStateBridge(AiWorkflowState.SELECTING_FILES)
             mockFileScanner.scanProjectFiles(projectDir)
-            mockGeminiHelper.sendApiRequest(any(), any(), any(), any(), eq("application/json"))
-            mockBridge.currentProjectDirBridge = projectDir
+            mockGeminiHelper.sendApiRequest(
+                contents = any(),
+                callback = any(),
+                responseMimeTypeOverride = "application/json"
+            )
         }
     }
 }

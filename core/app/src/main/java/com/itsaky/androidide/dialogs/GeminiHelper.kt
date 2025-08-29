@@ -1,4 +1,3 @@
-// GeminiHelper.kt
 package com.itsaky.androidide.dialogs
 
 import android.util.Log
@@ -42,11 +41,10 @@ class GeminiHelper(
     private val uiThreadExecutor: (block: () -> Unit) -> Unit
 ) {
     companion object {
-        const val DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
+        const val DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"
         private const val OPENAI_DEFAULT_MAX_COMPLETION_TOKENS = 8192
         private const val RAW_LOG_TAG = "GemHelper_RAW"
 
-        // Max thinking budgets (per public docs; subject to provider changes)
         private const val GEMINI_25_PRO_THINK_MAX = 32768
         private const val GEMINI_25_FLASH_MAX = 24576
         private const val GEMINI_25_FLASH_LITE_MAX = 24576
@@ -68,6 +66,25 @@ class GeminiHelper(
         currentModelIdentifier = if (modelId.isNotBlank()) modelId else DEFAULT_GEMINI_MODEL
         Log.i("GeminiHelper", "API model set to: $currentModelIdentifier")
     }
+
+    internal fun getSummariesSchema(): String = JSONObject().apply {
+        put("type", "object")
+        put("properties", JSONObject().apply {
+            put("file_summaries", JSONObject().apply {
+                put("type", "array")
+                put("description", "An array of file paths and their concise one-sentence summaries.")
+                put("items", JSONObject().apply {
+                    put("type", "object")
+                    put("properties", JSONObject().apply {
+                        put("file_path", JSONObject().apply { put("type", "string") })
+                        put("summary", JSONObject().apply { put("type", "string") })
+                    })
+                    put("required", JSONArray().put("file_path").put("summary"))
+                })
+            })
+        })
+        put("required", JSONArray().put("file_summaries"))
+    }.toString()
 
     internal fun getFileModificationsSchema(): String = JSONObject().apply {
         put("type", "object")
@@ -224,14 +241,12 @@ class GeminiHelper(
         val id = modelId.lowercase()
         val b = baseClient.newBuilder()
         if (id.startsWith("gpt-5")) {
-            // Longer timeouts for GPT-5 reasoning responses
             b.readTimeout(300, TimeUnit.SECONDS)
             b.writeTimeout(300, TimeUnit.SECONDS)
             b.connectTimeout(60, TimeUnit.SECONDS)
             b.pingInterval(30, TimeUnit.SECONDS)
         }
-        if (id.startsWith("gemini-2.5")) {
-            // Longer timeouts for Gemini 2.5 (thinking can increase latency)
+        if (id.startsWith("gemini-2.5") || id.startsWith("gemini-1.5")) {
             b.readTimeout(300, TimeUnit.SECONDS)
             b.writeTimeout(300, TimeUnit.SECONDS)
             b.connectTimeout(60, TimeUnit.SECONDS)
@@ -283,7 +298,6 @@ class GeminiHelper(
         return json
     }
 
-    // OpenAI Chat Completions payload (request high reasoning effort for GPT-5; no unsupported fields)
     private fun buildOpenAiRequest(
         modelId: String,
         geminiContents: List<JSONObject>,
@@ -310,7 +324,6 @@ class GeminiHelper(
         val body = JSONObject().apply {
             put("model", modelId)
             put("messages", messages)
-            // Token limits: let the API use defaults; do not set max_(completion_)tokens explicitly
         }
 
         val supportsJsonSchemaFormat = run {
@@ -344,7 +357,6 @@ class GeminiHelper(
         return body
     }
 
-    // Gemini request payload (mediaResolution MEDIUM for all 2.5 models currently)
     private fun buildGeminiRequest(
         contents: List<JSONObject>,
         responseSchemaJson: String?,
@@ -383,16 +395,13 @@ class GeminiHelper(
                     else -> defaultThinkingBudget
                 }
                 put("thinkingConfig", JSONObject().apply {
-                    put("thinkingBudget", budget)   // maximize thinking tokens
-                    put("includeThoughts", true)    // include thought summaries
+                    put("thinkingBudget", budget)
+                    put("includeThoughts", true)
                 })
-
-                // All 2.5 models (Pro/Flash/Flash-Lite) use MEDIA_RESOLUTION_MEDIUM currently
                 put("mediaResolution", "MEDIA_RESOLUTION_MEDIUM")
             }
         }
 
-        // Keep for compatibility with earlier previews that expected thinkingConfig presence
         if (isGemini25) {
             generationConfig.put("thinkingConfig", generationConfig.optJSONObject("thinkingConfig") ?: JSONObject().apply {
                 put("thinkingBudget", defaultThinkingBudget)
@@ -412,8 +421,6 @@ class GeminiHelper(
         }
     }
 
-    // When includeThoughts=true, Gemini may put a "thought" part first.
-    // Skip thought parts and prefer the first JSON-like non-thought text part; otherwise first non-thought text.
     fun extractTextFromApiResponse(response: JSONObject): String {
         return try {
             if (response.has("candidates")) {

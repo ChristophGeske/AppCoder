@@ -167,15 +167,15 @@ dependencies {
   implementation("com.squareup.okhttp3:okhttp:4.10.0")
 
 
-  // --- TESTING DEPENDENCIES ---
+  // --- FOKUSSIERTE TEST-ABHÄNGIGKEITEN ---
 
-  // Base test dependencies from your project
+  // Basis-Abhängigkeiten aus Ihrem Projekt
   testImplementation(projects.testing.unitTest)
   androidTestImplementation(projects.testing.androidTest)
 
-  // ADDED: MockK, a modern mocking library for Kotlin.
+  // Mocking-Bibliothek für unseren neuen, einfachen Test
   testImplementation("io.mockk:mockk:1.13.10")
 
-  // Required for unit tests to use JSONObject
+  // Erforderlich für die Verwendung von JSONObject in Unit-Tests
   testImplementation("org.json:json:20231013")
 }
