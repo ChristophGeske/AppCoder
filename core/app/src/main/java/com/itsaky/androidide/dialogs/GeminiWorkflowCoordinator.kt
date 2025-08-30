@@ -167,11 +167,6 @@ class GeminiWorkflowCoordinator(
         }
         val prompt = sb.toString()
         Log.d("AI_PIPELINE", "requestFileSummaries: sending ${allProjectFiles.size} files, promptChars=${prompt.length}, modelOverride=${getFastModelForSummarization()}")
-        if (prompt.length <= RAW_LOG_SNIPPET) {
-            Log.v("GemHelper_RAW", "Summarization prompt (full): $prompt")
-        } else {
-            Log.v("GemHelper_RAW", "Summarization prompt (first $RAW_LOG_SNIPPET chars): ${prompt.take(RAW_LOG_SNIPPET)}")
-        }
         logPromptToUi("Summarization prompt", prompt)
         conversation.addUserMessage(prompt)
         val overrideModel = getFastModelForSummarization()
@@ -190,14 +185,23 @@ class GeminiWorkflowCoordinator(
         logPromptToUi("Summaries response (structural)", responseText)
         try {
             val root = JSONObject(responseText).unwrapDataIfPresent()
-            val arr = root.getJSONArray("file_summaries")
+
+            val arr = root.optJSONArrayByKeys("file_summaries", "fileSummaries", "files") ?: run {
+                throw JSONException("No value for file_summaries, fileSummaries, or files")
+            }
+
             val summariesMap = mutableMapOf<String, String>()
-            for (i in 0 until arr.length()) {
-                val item = arr.getJSONObject(i)
-                val path = item.optString("file_path", "").ifBlank { item.optString("filePath", "") }
+            arr.forEachObject { item ->
+                val path = item.optStringByKeys("file_path", "filePath", "file_name", "path") ?: ""
                 val summary = item.optString("summary", "")
                 if (path.isNotBlank()) summariesMap[path] = summary
             }
+
+            if (summariesMap.isEmpty() && arr.length() > 0) {
+                handleError("Parsed summaries array but the map is empty. Check JSON keys in response.", null)
+                return
+            }
+
             this.fileSummaries = summariesMap
             logViaBridge("✅ Summaries received for ${summariesMap.size} files.\n")
             Log.i("AI_PIPELINE", "Summaries parsed: count=${summariesMap.size}; sample=${summariesMap.entries.take(3)}")
@@ -218,8 +222,6 @@ class GeminiWorkflowCoordinator(
             fileSummaries.forEach { (path, summary) -> append("- `$path`: $summary\n") }
             append("\nBased on my goal, which files do you need to see the full content of to begin? Respond ONLY with a JSON array of file paths.\n")
         }
-        Log.d("AI_PIPELINE", "requestFileSelectionFromSummaries: summaries=${fileSummaries.size}, promptChars=${prompt.length}")
-        Log.v("GemHelper_RAW", "Selection-from-summaries prompt (first $RAW_LOG_SNIPPET chars): ${prompt.take(RAW_LOG_SNIPPET)}")
         logPromptToUi("Selection-from-summaries prompt", prompt)
         conversation.addUserMessage(prompt)
 
@@ -228,7 +230,6 @@ class GeminiWorkflowCoordinator(
             callback = { response: JSONObject ->
                 try {
                     val responseText = geminiHelper.extractTextFromApiResponse(response)
-                    Log.d("AI_PIPELINE", "fileSelectionFromSummaries response: rawLen=${responseText.length}, snippet='${responseText.take(RAW_LOG_SNIPPET)}'")
                     logPromptToUi("Selection-from-summaries response (structural)", responseText)
                     val jsonArray = JSONArray(geminiHelper.extractJsonArrayFromText(responseText))
                     val selected = List(jsonArray.length()) { jsonArray.getString(it) }.filter { it.isNotBlank() }
@@ -248,6 +249,7 @@ class GeminiWorkflowCoordinator(
                     handleError("Failed to parse file selection from LLM: ${e.message}", e)
                 }
             },
+            modelIdentifierOverride = null, // Use main model
             responseMimeTypeOverride = "application/json"
         )
     }
@@ -378,7 +380,6 @@ class GeminiWorkflowCoordinator(
             val prompt = promptWriteForSubset(filesBlock, subset)
             conversation.addUserMessage(prompt)
             Log.i("AI_PIPELINE", "Fallback write chunk ${index + 1}/${chunks.size}: subsetSize=${subset.size}, promptChars=${prompt.length}")
-            Log.v("GemHelper_RAW", "Fallback write prompt (first $RAW_LOG_SNIPPET chars): ${prompt.take(RAW_LOG_SNIPPET)}")
             logPromptToUi("Fallback write prompt (subset ${index + 1}/${chunks.size})", prompt)
 
             geminiHelper.sendApiRequest(
@@ -507,7 +508,6 @@ class GeminiWorkflowCoordinator(
             logViaBridge("Requesting full contents for ${if (expected.isEmpty()) "open set (no explicit plan)" else "${expected.size} planned file(s)"}...\n")
             if (expected.isNotEmpty()) logViaBridge("Expected list:\n${expected.joinToString("\n")}\n")
             Log.i("AI_PIPELINE", "Write step: expected=${expected.size}, filesShown=${currentFilesMap.size}, promptChars=${prompt.length}")
-            Log.v("GemHelper_RAW", "Write prompt (first $RAW_LOG_SNIPPET chars): ${prompt.take(RAW_LOG_SNIPPET)}")
             logPromptToUi("Write prompt", prompt)
 
             geminiHelper.sendApiRequest(
@@ -585,7 +585,6 @@ class GeminiWorkflowCoordinator(
             conversation.addUserMessage(prompt)
             logViaBridge("Planning: asking LLM which files to modify/create... (${currentFilesMap.size} files shown)\n")
             Log.i("AI_PIPELINE", "Plan step: filesShown=${currentFilesMap.size}, promptChars=${prompt.length}")
-            Log.v("GemHelper_RAW", "Plan prompt (first $RAW_LOG_SNIPPET chars): ${prompt.take(RAW_LOG_SNIPPET)}")
             logPromptToUi("Plan prompt", prompt)
 
             geminiHelper.sendApiRequest(
@@ -635,7 +634,6 @@ class GeminiWorkflowCoordinator(
                 conversation.addUserMessage(prompt)
                 logViaBridge("Asking LLM if it needs more files (round ${needMoreRounds + 1})... Showing ${currentFilesMap.size} file(s).\n")
                 Log.i("AI_PIPELINE", "Need-more step round=${needMoreRounds + 1}, filesShown=${currentFilesMap.size}, promptChars=${prompt.length}")
-                Log.v("GemHelper_RAW", "Need-more prompt (first $RAW_LOG_SNIPPET chars): ${prompt.take(RAW_LOG_SNIPPET)}")
                 logPromptToUi("Need-more prompt", prompt)
 
                 geminiHelper.sendApiRequest(
@@ -731,8 +729,6 @@ class GeminiWorkflowCoordinator(
     """.trimIndent()
 
         val conv = GeminiConversation().apply { addUserMessage(prompt) }
-        Log.i("AI_PIPELINE", "generateInitialFilesFromDescription: attempt=$attempt, modelOverride=null, promptChars=${prompt.length}, existingFiles=${existingFiles.size}")
-        Log.v("GemHelper_RAW", "Initial-generation prompt (first $RAW_LOG_SNIPPET chars): ${prompt.take(RAW_LOG_SNIPPET)}")
         logPromptToUi("Initial-generation prompt", prompt)
 
         geminiHelper.sendApiRequest(
@@ -740,8 +736,6 @@ class GeminiWorkflowCoordinator(
             callback = { response: JSONObject ->
                 try {
                     val txt = geminiHelper.extractTextFromApiResponse(response)
-                    Log.i(TAG, "Initial generation JSON (first 512 chars): ${txt.take(512)}")
-                    Log.d("AI_PIPELINE", "initialGeneration response: rawLen=${txt.length}, snippet='${txt.take(RAW_LOG_SNIPPET)}'")
                     logPromptToUi("Initial-generation response (structural)", txt)
                     val filesMap = geminiHelper.parseMinimalFilesResponse(txt)
                     if (!filesMap.isNullOrEmpty()) {
@@ -861,8 +855,6 @@ class GeminiWorkflowCoordinator(
       Your response MUST be a single JSON object with one REQUIRED key: "summary" (string).
     """.trimIndent()
 
-        Log.i("AI_PIPELINE", "requestSummaryFromAI: attempt=$attempt, promptChars=${summaryPrompt.length}, changes=write=${generatedFiles.size}, del=${deletedFiles.size}")
-        Log.v("GemHelper_RAW", "Summary prompt (first $RAW_LOG_SNIPPET chars): ${summaryPrompt.take(RAW_LOG_SNIPPET)}")
         logPromptToUi("Summary prompt", summaryPrompt)
 
         val summaryConversation = GeminiConversation().apply {
@@ -870,7 +862,6 @@ class GeminiWorkflowCoordinator(
             if (attempt > 0) addUserMessage("Retry ($attempt/$MAX_SUMMARY_RETRIES): Return ONLY a JSON object with a 'summary' string. No prose.")
         }
 
-        // FIX: Use the fast model specifically for the final summary
         val overrideModel = getFastModelForSummarization()
 
         geminiHelper.sendApiRequest(
@@ -879,8 +870,6 @@ class GeminiWorkflowCoordinator(
                 var finalSummaryToDisplay: String? = originalConclusion
                 try {
                     val summaryResponseJsonText = geminiHelper.extractTextFromApiResponse(response)
-                    Log.i(TAG, "Raw summary generation response from AI: ${summaryResponseJsonText.take(512)}")
-                    Log.d("AI_PIPELINE", "summary response: rawLen=${summaryResponseJsonText.length}, snippet='${summaryResponseJsonText.take(RAW_LOG_SNIPPET)}'")
                     logPromptToUi("Summary response (structural)", summaryResponseJsonText)
                     if (summaryResponseJsonText.isBlank()) {
                         val raw = response.toString()
@@ -965,8 +954,6 @@ class GeminiWorkflowCoordinator(
 
       Given this error and the project file summaries (if available), which files do you need to see in full to fix the issue? Respond ONLY with a JSON array of file paths.
     """.trimIndent()
-        Log.d("AI_PIPELINE", "build-fix request promptChars=${prompt.length}")
-        Log.v("GemHelper_RAW", "Build-fix prompt (first $RAW_LOG_SNIPPET chars): ${prompt.take(RAW_LOG_SNIPPET)}")
         logPromptToUi("Build-fix prompt", prompt)
 
         conversation.addUserMessage(prompt)
@@ -975,7 +962,6 @@ class GeminiWorkflowCoordinator(
             callback = { response: JSONObject ->
                 try {
                     val responseText = geminiHelper.extractTextFromApiResponse(response)
-                    Log.d("AI_PIPELINE", "build-fix selection response: rawLen=${responseText.length}, snippet='${responseText.take(RAW_LOG_SNIPPET)}'")
                     logPromptToUi("Build-fix selection response (structural)", responseText)
                     val jsonArray = JSONArray(geminiHelper.extractJsonArrayFromText(responseText))
                     val selectedFiles = List(jsonArray.length()) { jsonArray.getString(it) }
@@ -993,6 +979,7 @@ class GeminiWorkflowCoordinator(
                     handleError("Failed to parse file selection from LLM during fix attempt: ${e.message}", e)
                 }
             },
+            modelIdentifierOverride = null, // Use main model
             responseMimeTypeOverride = "application/json"
         )
     }
