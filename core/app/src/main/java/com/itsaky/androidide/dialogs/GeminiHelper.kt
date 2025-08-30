@@ -1,3 +1,4 @@
+// File: com/itsaky/androidide/dialogs/GeminiHelper.kt
 package com.itsaky.androidide.dialogs
 
 import android.util.Log
@@ -31,13 +32,6 @@ data class MinimalBatchResult(
     val unchanged: List<String>
 )
 
-private fun JSONArray.forEachObject(action: (JSONObject) -> Unit) {
-    for (i in 0 until length()) {
-        val obj = optJSONObject(i)
-        if (obj != null) action(obj)
-    }
-}
-
 class GeminiHelper(
     private val apiKeyProvider: () -> String,
     private val errorHandlerCallback: (String, Exception?) -> Unit,
@@ -47,10 +41,20 @@ class GeminiHelper(
         const val DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"
         private const val OPENAI_DEFAULT_MAX_COMPLETION_TOKENS = 8192
         private const val RAW_LOG_TAG = "GemHelper_RAW"
+        private const val PIPE = "AI_PIPELINE"
 
         private const val GEMINI_25_PRO_THINK_MAX = 32768
         private const val GEMINI_25_FLASH_MAX = 24576
         private const val GEMINI_25_FLASH_LITE_MAX = 24576
+
+        // Retry/fallback policy for transient overloads
+        private val RETRYABLE_HTTP_CODES = setOf(408, 429, 500, 502, 503, 504)
+        private const val MAX_HTTP_RETRIES = 3
+        private fun backoffDelayMs(attempt: Int): Long {
+            val base = (1000L shl attempt).coerceAtMost(8000L) // 1s, 2s, 4s, cap 8s
+            val jitter = kotlin.random.Random.Default.nextLong(0L, 400L)
+            return base + jitter
+        }
     }
 
     private val baseClient = OkHttpClient.Builder()
@@ -60,14 +64,13 @@ class GeminiHelper(
         .retryOnConnectionFailure(true)
         .build()
 
-    private val defaultThinkingBudget = 24576
-
     var currentModelIdentifier: String = DEFAULT_GEMINI_MODEL
         private set
 
     fun setModel(modelId: String) {
         currentModelIdentifier = if (modelId.isNotBlank()) modelId else DEFAULT_GEMINI_MODEL
         Log.i("GeminiHelper", "API model set to: $currentModelIdentifier")
+        Log.i(PIPE, "Model set to: $currentModelIdentifier")
     }
 
     // Public JSON helper extensions (used by Coordinator too)
@@ -87,7 +90,7 @@ class GeminiHelper(
         return null
     }
 
-    // --- NEW FUNCTION for the summarization step ---
+    // --- Schemas used by the Coordinator ---
     internal fun getSummariesSchema(): String = JSONObject().apply {
         put("type", "object")
         put("properties", JSONObject().apply {
@@ -107,7 +110,6 @@ class GeminiHelper(
         put("required", JSONArray().put("file_summaries"))
     }.toString()
 
-    // --- UPDATED FUNCTION for the iterative workflow ---
     internal fun getFileModificationsSchema(): String = JSONObject().apply {
         put("type", "object")
         put("properties", JSONObject().apply {
@@ -160,30 +162,6 @@ class GeminiHelper(
         put("additionalProperties", false)
     }.toString()
 
-    internal fun getMinimalFilesWithUnchangedSchema(): String = JSONObject().apply {
-        put("type", "object")
-        put("properties", JSONObject().apply {
-            put("filesToWrite", JSONObject().apply {
-                put("type", "array"); put("nullable", true)
-                put("items", JSONObject().apply {
-                    put("type", "object")
-                    put("properties", JSONObject().apply {
-                        put("filePath", JSONObject().apply { put("type", "string") })
-                        put("fileContent", JSONObject().apply { put("type", "string") })
-                    })
-                    put("required", JSONArray().put("filePath").put("fileContent"))
-                    put("additionalProperties", false)
-                })
-            })
-            put("unchanged", JSONObject().apply {
-                put("type", "array"); put("nullable", true)
-                put("items", JSONObject().apply { put("type", "string") })
-            })
-        })
-        put("required", JSONArray().put("filesToWrite").put("unchanged"))
-        put("additionalProperties", false)
-    }.toString()
-
     internal fun getSummaryOnlySchema(): String = JSONObject().apply {
         put("type", "object")
         put("properties", JSONObject().apply {
@@ -206,64 +184,122 @@ class GeminiHelper(
         val apiKey = apiKeyProvider()
         if (apiKey.isBlank()) { errorHandlerCallback("API Key is not set.", null); return }
 
-        val effectiveModelIdentifier = modelIdentifierOverride ?: currentModelIdentifier
-        val isGptModel = effectiveModelIdentifier.startsWith("gpt-", ignoreCase = true)
+        // We'll rebuild the request per attempt (supports model fallback).
+        val initialModelId = modelIdentifierOverride ?: currentModelIdentifier
 
-        val requestJson = if (isGptModel) {
-            buildOpenAiRequest(
-                modelId = effectiveModelIdentifier,
-                geminiContents = contents,
-                responseSchemaJson = responseSchemaJson
-            )
-        } else {
-            buildGeminiRequest(contents, responseSchemaJson, responseMimeTypeOverride, effectiveModelIdentifier)
-        } ?: return
+        fun maskApiKeyInUrl(u: String): String = u.replace(Regex("(key=)([^&]+)"), "$1****")
 
-        val url = if (isGptModel)
-            "https://api.openai.com/v1/chat/completions"
-        else
-            "https://generativelanguage.googleapis.com/v1beta/models/${effectiveModelIdentifier}:generateContent?key=$apiKey"
+        fun fallbackModelFor(modelId: String): String? {
+            val id = modelId.lowercase()
+            return when {
+                id.startsWith("gemini-2.5-flash") -> "gemini-2.5-pro"
+                id == "gpt-5-mini" -> "gpt-5"
+                else -> null
+            }
+        }
 
-        val req = Request.Builder()
-            .url(url)
-            .post(requestJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-            .apply { if (isGptModel) addHeader("Authorization", "Bearer $apiKey") }
-            .build()
+        fun buildRequestForModel(modelId: String): Pair<Request, OkHttpClient>? {
+            val isGptModel = modelId.startsWith("gpt-", ignoreCase = true)
+            Log.i(PIPE, "sendApiRequest: model='$modelId', isGpt=$isGptModel, schemaProvided=${!responseSchemaJson.isNullOrBlank()}, responseMimeType=$responseMimeTypeOverride, contentsParts=${contents.size}")
 
-        val http = clientForModel(effectiveModelIdentifier)
-        fun enqueueWithRetry(attempt: Int) {
+            val requestJson = if (isGptModel) {
+                buildOpenAiRequest(
+                    modelId = modelId,
+                    geminiContents = contents,
+                    responseSchemaJson = responseSchemaJson
+                )
+            } else {
+                buildGeminiRequest(contents, responseSchemaJson, responseMimeTypeOverride, modelId)
+            } ?: return null
+
+            val url = if (isGptModel)
+                "https://api.openai.com/v1/chat/completions"
+            else
+                "https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=$apiKey"
+
+            val req = Request.Builder()
+                .url(url)
+                .post(requestJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .apply { if (isGptModel) addHeader("Authorization", "Bearer $apiKey") }
+                .build()
+
+            val reqStr = requestJson.toString()
+            Log.v(RAW_LOG_TAG, "Request JSON to ${if (isGptModel) "OpenAI" else "Gemini"} (first 2000 chars): ${reqStr.take(2000)}")
+
+            val http = clientForModel(modelId)
+            Log.d(PIPE, "HTTP POST -> ${maskApiKeyInUrl(req.url.toString())}")
+            return req to http
+        }
+
+        fun enqueueWithRetry(modelId: String, attempt: Int, fallbackUsed: Boolean) {
+            val pair = buildRequestForModel(modelId) ?: return
+            val (req, http) = pair
+
             http.newCall(req).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
-                    val retryable = (e is SocketTimeoutException) || (e is UnknownHostException)
-                    if (retryable && attempt < 2) {
-                        Log.w("GeminiHelper", "Network error on $effectiveModelIdentifier: ${e.javaClass.simpleName}. Retrying (attempt ${attempt + 1})...")
-                        enqueueWithRetry(attempt + 1); return
+                    val retryableNet = (e is SocketTimeoutException) || (e is UnknownHostException)
+                    if (retryableNet && attempt < MAX_HTTP_RETRIES) {
+                        val delay = backoffDelayMs(attempt)
+                        Log.w(PIPE, "HTTP failure (retryableNet=$retryableNet) on model=$modelId: ${e.javaClass.simpleName}; delay=${delay}ms; attempt=${attempt + 1}")
+                        Thread {
+                            try { Thread.sleep(delay) } catch (_: InterruptedException) {}
+                            enqueueWithRetry(modelId, attempt + 1, fallbackUsed)
+                        }.start()
+                        return
                     }
-                    errorHandlerCallback("API Network Error ($effectiveModelIdentifier): ${e.message}", e)
+                    errorHandlerCallback("API Network Error ($modelId): ${e.message}", e)
                 }
+
                 override fun onResponse(call: Call, response: Response) {
                     val responseBody = response.body?.string()
                     try {
                         if (!response.isSuccessful || responseBody == null) {
                             var detail = responseBody ?: "No error body"
+                            val code = response.code
                             try {
                                 val j = JSONObject(responseBody ?: "")
                                 detail = j.optJSONObject("error")?.optString("message", detail) ?: j.optString("message", detail)
                             } catch (_: Exception) {}
-                            errorHandlerCallback("API Error ($effectiveModelIdentifier - Code: ${response.code}): $detail", null)
+
+                            val retryableHttp = RETRYABLE_HTTP_CODES.contains(code)
+                            if (retryableHttp && attempt < MAX_HTTP_RETRIES) {
+                                val delay = backoffDelayMs(attempt)
+                                Log.w(PIPE, "HTTP <- code=$code (retryable). Retrying in ${delay}ms; attempt=${attempt + 1}; detail='${detail.take(256)}'")
+                                Thread {
+                                    try { Thread.sleep(delay) } catch (_: InterruptedException) {}
+                                    enqueueWithRetry(modelId, attempt + 1, fallbackUsed)
+                                }.start()
+                                return
+                            }
+
+                            if (retryableHttp && !fallbackUsed) {
+                                val alt = fallbackModelFor(modelId)
+                                if (!alt.isNullOrBlank()) {
+                                    Log.w(PIPE, "HTTP <- code=$code (retryable) exhausted retries; falling back model: '$modelId' -> '$alt'")
+                                    enqueueWithRetry(alt, 0, true)
+                                    return
+                                }
+                            }
+
+                            Log.e(PIPE, "HTTP <- error code=$code, detail=${detail.take(512)}")
+                            errorHandlerCallback("API Error ($modelId - Code: $code): $detail", null)
                             return
                         }
-                        Log.d(RAW_LOG_TAG, "Raw JSON from ${if (isGptModel) "OpenAI" else "Gemini"}: $responseBody")
+
+                        Log.d(RAW_LOG_TAG, "Raw JSON from ${if (modelId.startsWith("gpt-", true)) "OpenAI" else "Gemini"}: $responseBody")
+                        Log.d(PIPE, "HTTP <- success code=${response.code}, bytes=${responseBody.length}")
                         val jsonResponse = JSONObject(responseBody)
                         uiThreadExecutor { callback(jsonResponse) }
                     } catch (e: Exception) {
-                        errorHandlerCallback("Error processing API response ($effectiveModelIdentifier): ${e.message}", e)
+                        errorHandlerCallback("Error processing API response ($modelId): ${e.message}", e)
                         Log.e("GeminiHelper", "Response Body on error: $responseBody", e)
+                        Log.e(PIPE, "Error processing API response: ${e.message}")
                     } finally { response.body?.close() }
                 }
             })
         }
-        enqueueWithRetry(0)
+
+        enqueueWithRetry(initialModelId, attempt = 0, fallbackUsed = false)
     }
 
     private fun clientForModel(modelId: String): OkHttpClient {
@@ -274,57 +310,16 @@ class GeminiHelper(
             b.writeTimeout(300, TimeUnit.SECONDS)
             b.connectTimeout(60, TimeUnit.SECONDS)
             b.pingInterval(30, TimeUnit.SECONDS)
+            Log.d(PIPE, "clientForModel: tuned timeouts for $modelId (OpenAI gpt-5*)")
         }
         if (id.startsWith("gemini-2.5") || id.startsWith("gemini-1.5")) {
             b.readTimeout(300, TimeUnit.SECONDS)
             b.writeTimeout(300, TimeUnit.SECONDS)
             b.connectTimeout(60, TimeUnit.SECONDS)
             b.pingInterval(30, TimeUnit.SECONDS)
+            Log.d(PIPE, "clientForModel: tuned timeouts for $modelId (Gemini 1.5/2.5)")
         }
         return b.build()
-    }
-
-    private fun openAiTokenParamName(modelId: String): String {
-        val id = modelId.lowercase()
-        return if (id.startsWith("gpt-5") || id.startsWith("gpt-4.1"))
-            "max_completion_tokens" else "max_tokens"
-    }
-
-    private fun openAiMaxCompletionTokens(modelId: String): Int {
-        val id = modelId.lowercase()
-        return when {
-            id.startsWith("gpt-5-nano") -> 20_000
-            id.startsWith("gpt-5-mini") -> 20_000
-            id.startsWith("gpt-5")      -> 40_000
-            id.startsWith("gpt-4.1")    -> 4_096
-            else -> OPENAI_DEFAULT_MAX_COMPLETION_TOKENS
-        }
-    }
-
-    private fun removeUnsupportedKeys(json: Any): Any {
-        when (json) {
-            is JSONObject -> {
-                val keysToRemove = mutableListOf<String>()
-                val iterator = json.keys()
-                while (iterator.hasNext()) {
-                    val key = iterator.next()
-                    if (key == "additionalProperties") {
-                        keysToRemove.add(key)
-                    } else {
-                        removeUnsupportedKeys(json.get(key))
-                    }
-                }
-                for (key in keysToRemove) {
-                    json.remove(key)
-                }
-            }
-            is JSONArray -> {
-                for (i in 0 until json.length()) {
-                    removeUnsupportedKeys(json.get(i))
-                }
-            }
-        }
-        return json
     }
 
     private fun buildOpenAiRequest(
@@ -366,6 +361,7 @@ class GeminiHelper(
         if (!responseSchemaJson.isNullOrBlank()) {
             if (supportsJsonSchemaFormat) {
                 Log.d(RAW_LOG_TAG, "Using 'json_schema' response_format for model: $modelId")
+                Log.d(PIPE, "OpenAI response_format=json_schema for model=$modelId")
                 body.put("response_format", JSONObject().apply {
                     put("type", "json_schema")
                     put("json_schema", JSONObject().apply {
@@ -376,16 +372,37 @@ class GeminiHelper(
                 })
             } else {
                 Log.d(RAW_LOG_TAG, "Falling back to 'json_object' (JSON Mode) for model: $modelId")
+                Log.d(PIPE, "OpenAI response_format=json_object for model=$modelId (no schema format support)")
                 body.put("response_format", JSONObject().put("type", "json_object"))
             }
         }
-
-        val idLower = modelId.lowercase()
-        if (idLower.startsWith("gpt-5")) {
-            body.put("reasoning_effort", "high")
-        }
-
         return body
+    }
+
+    private fun removeUnsupportedKeys(json: Any): Any {
+        when (json) {
+            is JSONObject -> {
+                val keysToRemove = mutableListOf<String>()
+                val iterator = json.keys()
+                while (iterator.hasNext()) {
+                    val key = iterator.next()
+                    if (key == "additionalProperties") {
+                        keysToRemove.add(key)
+                    } else {
+                        removeUnsupportedKeys(json.get(key))
+                    }
+                }
+                for (key in keysToRemove) {
+                    json.remove(key)
+                }
+            }
+            is JSONArray -> {
+                for (i in 0 until json.length()) {
+                    removeUnsupportedKeys(json.get(i))
+                }
+            }
+        }
+        return json
     }
 
     private fun buildGeminiRequest(
@@ -412,6 +429,7 @@ class GeminiHelper(
                     val originalSchema = JSONObject(responseSchemaJson)
                     val cleanedSchema = removeUnsupportedKeys(originalSchema) as JSONObject
                     put("response_schema", cleanedSchema)
+                    Log.d(PIPE, "Gemini generationConfig: response_schema included, mime=${responseMimeTypeOverride ?: "application/json"}")
                 } catch (e: JSONException) {
                     errorHandlerCallback("Invalid response_schema JSON: ${e.message}", e)
                     return null
@@ -423,7 +441,7 @@ class GeminiHelper(
                     isPro -> GEMINI_25_PRO_THINK_MAX
                     isFlash -> GEMINI_25_FLASH_MAX
                     isFlashLite -> GEMINI_25_FLASH_LITE_MAX
-                    else -> defaultThinkingBudget
+                    else -> GEMINI_25_FLASH_MAX
                 }
                 put("thinkingConfig", JSONObject().apply {
                     put("thinkingBudget", budget)
@@ -431,13 +449,6 @@ class GeminiHelper(
                 })
                 put("mediaResolution", "MEDIA_RESOLUTION_MEDIUM")
             }
-        }
-
-        if (isGemini25) {
-            generationConfig.put("thinkingConfig", generationConfig.optJSONObject("thinkingConfig") ?: JSONObject().apply {
-                put("thinkingBudget", defaultThinkingBudget)
-                put("includeThoughts", true)
-            })
         }
 
         return JSONObject().apply {
@@ -480,7 +491,6 @@ class GeminiHelper(
                         break
                     }
                 }
-
                 jsonLike ?: firstNonThought ?: ""
             } else if (response.has("choices")) {
                 val firstChoice = response.optJSONArray("choices")?.optJSONObject(0) ?: return ""
@@ -532,35 +542,6 @@ class GeminiHelper(
             return null
         }
         return filesMap.takeIf { it.isNotEmpty() }
-    }
-
-    fun parseMinimalFilesAndUnchanged(jsonText: String): MinimalBatchResult? {
-        return try {
-            val root = JSONObject(jsonText).unwrapDataIfPresent()
-
-            val filesMap = mutableMapOf<String, String>()
-            root.optJSONArrayByKeys("filesToWrite", "files_to_write")?.forEachObject { obj ->
-                val path = obj.optStringByKeys("filePath", "file_path") ?: ""
-                val content = obj.optStringByKeys("fileContent", "file_content") ?: ""
-                if (path.isNotBlank()) filesMap[path] = content
-            }
-
-            val unchanged = mutableListOf<String>()
-            root.optJSONArrayByKeys("unchanged")?.let { arr ->
-                for (i in 0 until arr.length()) {
-                    val s = arr.optString(i)
-                    if (!s.isNullOrBlank()) unchanged.add(s)
-                }
-            }
-
-            MinimalBatchResult(
-                filesToWrite = filesMap,
-                unchanged = unchanged
-            )
-        } catch (e: JSONException) {
-            Log.e("GeminiHelper", "Error parsing MinimalBatchResult JSON: '$jsonText'. Error: ${e.message}", e)
-            null
-        }
     }
 
     fun parseSummaryResponse(jsonText: String): String? {
@@ -619,5 +600,13 @@ class GeminiHelper(
         if (startIndex != -1 && endIndex != -1 && endIndex > startIndex) return text.substring(startIndex, endIndex + 1)
         val cleanedText = text.replace("```json", "").replace("```", "").trim()
         return if (cleanedText.startsWith("[") && cleanedText.endsWith("]")) cleanedText else "[]"
+    }
+
+    // Helpers for JSON array/object iteration
+    private fun JSONArray.forEachObject(action: (JSONObject) -> Unit) {
+        for (i in 0 until length()) {
+            val obj = optJSONObject(i)
+            if (obj != null) action(obj)
+        }
     }
 }
