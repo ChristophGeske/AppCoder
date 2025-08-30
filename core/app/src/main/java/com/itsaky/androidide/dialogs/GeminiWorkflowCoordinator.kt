@@ -52,7 +52,7 @@ class GeminiWorkflowCoordinator(
         // When the LLM planned set is incomplete after the main write, fallback batch size
         private const val FALLBACK_WRITE_BATCH_SIZE = 5
 
-        // Code-dump logging helpers (for full file contents)
+        // Code-dump logging helpers (for full file contents) - MOVED HERE TO FIX BUILD
         private const val CODE_TAG = "AI_PIPELINE_CODE"
         private const val MAX_UI_SNIPPET = 8000
     }
@@ -103,14 +103,6 @@ class GeminiWorkflowCoordinator(
         return when {
             current.startsWith("gpt-5", true) -> "gpt-5-mini"
             current.startsWith("gemini-2.5-pro", true) -> "gemini-2.5-flash"
-            else -> null
-        }
-    }
-    private fun modelForStructuredSteps(): String? {
-        val current = geminiHelper.currentModelIdentifier
-        return when {
-            current.equals("gpt-5", ignoreCase = true) -> "gpt-5-mini"
-            current.startsWith("gemini-2.5-pro", ignoreCase = true) -> "gemini-2.5-flash"
             else -> null
         }
     }
@@ -353,7 +345,6 @@ class GeminiWorkflowCoordinator(
     private fun requestMissingWritesInSmallBatches(
         filesContext: Map<String, String>,
         missing: List<String>,
-        overrideModel: String?,
         onComplete: (Map<String, String>) -> Unit
     ) {
         val collected = LinkedHashMap<String, String>()
@@ -407,7 +398,7 @@ class GeminiWorkflowCoordinator(
                 },
                 responseSchemaJson = geminiHelper.getMinimalFilesSchema(),
                 responseMimeTypeOverride = "application/json",
-                modelIdentifierOverride = overrideModel
+                modelIdentifierOverride = null // Use main model for this critical step
             )
         }
 
@@ -420,7 +411,6 @@ class GeminiWorkflowCoordinator(
         appDescription: String,
         initialFiles: Map<String, String>
     ) {
-        val overrideModel = modelForStructuredSteps()
         val currentFilesMap = initialFiles.toMutableMap()
         var needMoreRounds = 0
 
@@ -484,23 +474,6 @@ class GeminiWorkflowCoordinator(
       $filesBlock
     """.trimIndent()
 
-        fun promptWriteForSubset(filesBlock: String, subset: List<String>): String = """
-      Task (Fallback APPLY for missing files): Return FULL content for ONLY the following files:
-      ${subset.joinToString(separator = "\n") { "- $it" }}
-
-      Respond ONLY with JSON:
-      {
-        "filesToWrite": [
-          { "filePath": "<one of the listed paths>", "fileContent": "<full file content>" }
-        ]
-      }
-
-      Do not include other files. No prose.
-      
-      Context files you saw:
-      $filesBlock
-    """.trimIndent()
-
         // Local lambdas with forward declarations to avoid unresolved references
         var stepNeedMore: () -> Unit = {}
         var stepPlan: () -> Unit = {}
@@ -531,11 +504,11 @@ class GeminiWorkflowCoordinator(
             }
 
             conversation.addUserMessage(prompt)
-            logPromptToUi("Write prompt", prompt)
             logViaBridge("Requesting full contents for ${if (expected.isEmpty()) "open set (no explicit plan)" else "${expected.size} planned file(s)"}...\n")
             if (expected.isNotEmpty()) logViaBridge("Expected list:\n${expected.joinToString("\n")}\n")
             Log.i("AI_PIPELINE", "Write step: expected=${expected.size}, filesShown=${currentFilesMap.size}, promptChars=${prompt.length}")
             Log.v("GemHelper_RAW", "Write prompt (first $RAW_LOG_SNIPPET chars): ${prompt.take(RAW_LOG_SNIPPET)}")
+            logPromptToUi("Write prompt", prompt)
 
             geminiHelper.sendApiRequest(
                 contents = conversation.getContentsForApi(),
@@ -546,7 +519,6 @@ class GeminiWorkflowCoordinator(
                         Log.d("AI_PIPELINE", "write response: rawLen=${responseText.length}, snippet='${responseText.take(RAW_LOG_SNIPPET)}'")
                         logPromptToUi("Write response (structural)", responseText)
 
-                        // Parse writes using existing helper (schema-compatible)
                         val fm = try {
                             geminiHelper.parseAndConvertStructuredResponse(responseText)
                         } catch (_: Exception) {
@@ -554,7 +526,6 @@ class GeminiWorkflowCoordinator(
                             mods ?: FileModifications(emptyMap(), emptyList(), null)
                         }
 
-                        // Dump full code of returned files
                         if (fm.filesToWrite.isNotEmpty()) {
                             logViaBridge("LLM provided ${fm.filesToWrite.size} file(s). See below:\n")
                             fm.filesToWrite.forEach { (path, content) ->
@@ -573,7 +544,6 @@ class GeminiWorkflowCoordinator(
                         val filesWritten = fm.filesToWrite.keys.toMutableSet()
                         Log.i("AI_PIPELINE", "Write step parsed filesToWrite=${filesWritten.size}, filesToDelete=${fm.filesToDelete.size}")
 
-                        // Validate if an expected set exists
                         if (expected.isNotEmpty()) {
                             val expectedSet = expected.toSet()
                             val missing = expectedSet.minus(filesWritten)
@@ -585,13 +555,10 @@ class GeminiWorkflowCoordinator(
 
                             if (missing.isNotEmpty()) {
                                 logViaBridge("Write missing ${missing.size} planned file(s). Requesting the missing ones in small subsets...\n")
-                                // Fallback batches for missing only
                                 requestMissingWritesInSmallBatches(
                                     filesContext = currentFilesMap,
-                                    missing = missing.toList(),
-                                    overrideModel = overrideModel
+                                    missing = missing.toList()
                                 ) { partial ->
-                                    // Merge all writes
                                     val combined = LinkedHashMap<String, String>(fm.filesToWrite)
                                     combined.putAll(partial)
                                     val final = FileModifications(combined, fm.filesToDelete, fm.conclusion)
@@ -600,8 +567,6 @@ class GeminiWorkflowCoordinator(
                                 return@sendApiRequest
                             }
                         }
-
-                        // All good or no expected list; apply directly
                         applyCodeChangesAndOrGetSummary(fm)
                     } catch (e: Exception) {
                         Log.e("AI_PIPELINE", "Error in write step: ${e.message}", e)
@@ -610,7 +575,7 @@ class GeminiWorkflowCoordinator(
                 },
                 responseSchemaJson = geminiHelper.getFileModificationsSchema(),
                 responseMimeTypeOverride = "application/json",
-                modelIdentifierOverride = overrideModel
+                modelIdentifierOverride = null // Use main model
             )
         }
 
@@ -618,10 +583,10 @@ class GeminiWorkflowCoordinator(
             val filesBlock = makeFilesContentBlock(currentFilesMap)
             val prompt = promptPlan(filesBlock)
             conversation.addUserMessage(prompt)
-            logPromptToUi("Plan prompt", prompt)
             logViaBridge("Planning: asking LLM which files to modify/create... (${currentFilesMap.size} files shown)\n")
             Log.i("AI_PIPELINE", "Plan step: filesShown=${currentFilesMap.size}, promptChars=${prompt.length}")
             Log.v("GemHelper_RAW", "Plan prompt (first $RAW_LOG_SNIPPET chars): ${prompt.take(RAW_LOG_SNIPPET)}")
+            logPromptToUi("Plan prompt", prompt)
 
             geminiHelper.sendApiRequest(
                 contents = conversation.getContentsForApi(),
@@ -636,7 +601,7 @@ class GeminiWorkflowCoordinator(
                         val arr = obj.optJSONArrayByKeys("plannedFilesToWrite", "planned_files_to_write")
                         if (arr == null || arr.length() == 0) {
                             logViaBridge("Plan returned no files; proceeding to write without explicit plan.\n")
-                            stepWrite(emptyList()) // allow direct write if model skipped plan
+                            stepWrite(emptyList())
                             return@sendApiRequest
                         }
                         val expected = mutableListOf<String>()
@@ -649,12 +614,11 @@ class GeminiWorkflowCoordinator(
                     } catch (e: Exception) {
                         Log.e("AI_PIPELINE", "Plan step parsing error: ${e.message}", e)
                         logViaBridge("⚠️ Plan parse error: ${e.message}. Proceeding to write without explicit plan.\n")
-                        // Fallback: attempt write without expected list
                         stepWrite(emptyList())
                     }
                 },
                 responseMimeTypeOverride = "application/json",
-                modelIdentifierOverride = overrideModel
+                modelIdentifierOverride = null // Use main model
             )
         }
 
@@ -669,10 +633,10 @@ class GeminiWorkflowCoordinator(
                 val filesBlock = makeFilesContentBlock(currentFilesMap)
                 val prompt = promptNeedMore(filesBlock)
                 conversation.addUserMessage(prompt)
-                logPromptToUi("Need-more prompt", prompt)
                 logViaBridge("Asking LLM if it needs more files (round ${needMoreRounds + 1})... Showing ${currentFilesMap.size} file(s).\n")
                 Log.i("AI_PIPELINE", "Need-more step round=${needMoreRounds + 1}, filesShown=${currentFilesMap.size}, promptChars=${prompt.length}")
                 Log.v("GemHelper_RAW", "Need-more prompt (first $RAW_LOG_SNIPPET chars): ${prompt.take(RAW_LOG_SNIPPET)}")
+                logPromptToUi("Need-more prompt", prompt)
 
                 geminiHelper.sendApiRequest(
                     contents = conversation.getContentsForApi(),
@@ -730,7 +694,7 @@ class GeminiWorkflowCoordinator(
                         }
                     },
                     responseMimeTypeOverride = "application/json",
-                    modelIdentifierOverride = overrideModel
+                    modelIdentifierOverride = null // Use main model
                 )
             }
         }
@@ -767,8 +731,7 @@ class GeminiWorkflowCoordinator(
     """.trimIndent()
 
         val conv = GeminiConversation().apply { addUserMessage(prompt) }
-        val overrideModel = modelForStructuredSteps()
-        Log.i("AI_PIPELINE", "generateInitialFilesFromDescription: attempt=$attempt, modelOverride=$overrideModel, promptChars=${prompt.length}, existingFiles=${existingFiles.size}")
+        Log.i("AI_PIPELINE", "generateInitialFilesFromDescription: attempt=$attempt, modelOverride=null, promptChars=${prompt.length}, existingFiles=${existingFiles.size}")
         Log.v("GemHelper_RAW", "Initial-generation prompt (first $RAW_LOG_SNIPPET chars): ${prompt.take(RAW_LOG_SNIPPET)}")
         logPromptToUi("Initial-generation prompt", prompt)
 
@@ -800,7 +763,7 @@ class GeminiWorkflowCoordinator(
             },
             responseSchemaJson = geminiHelper.getMinimalFilesSchema(),
             responseMimeTypeOverride = "application/json",
-            modelIdentifierOverride = overrideModel
+            modelIdentifierOverride = null // Use main model
         )
     }
 
@@ -907,7 +870,8 @@ class GeminiWorkflowCoordinator(
             if (attempt > 0) addUserMessage("Retry ($attempt/$MAX_SUMMARY_RETRIES): Return ONLY a JSON object with a 'summary' string. No prose.")
         }
 
-        val overrideModel = modelForStructuredSteps()
+        // FIX: Use the fast model specifically for the final summary
+        val overrideModel = getFastModelForSummarization()
 
         geminiHelper.sendApiRequest(
             contents = summaryConversation.getContentsForApi(),
