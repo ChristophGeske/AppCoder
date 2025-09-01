@@ -23,8 +23,8 @@
 4. **🤓 Keep it Simple**
    * Stick to simple games and proof of concept apps, especially if it comes to long complex apps.
 
-5. **📲 Check back for updates**
-   * So many more improvements and ideas can be added to make this app better, so please check back later if you like the idea.
+5. **📲 Check Back for Updates**
+   * So many more improvements are possible to make this app better, so please check back later if you like this concept.
 ---
 
 ## 💡 What is AppCoder?
@@ -116,6 +116,7 @@ AndroidIDE is distributed in the hope that it will be useful, but WITHOUT ANY WA
 
 You should have received a copy of the GNU General Public License along with AndroidIDE. If not, see <https://www.gnu.org/licenses/>.
 ```
+
 
 
 
