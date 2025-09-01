@@ -4,7 +4,7 @@
 
 ---
 
-## 🚀 Get Started with the First Release!
+## 🚀 Get Started with the Early Alpha Release!
 
 **The First AppCoder Version is ready for you to test!**
 
@@ -20,6 +20,11 @@
 3.  **📲 Install & Use AppCoder:**
     *   See the **[latest release page](https://github.com/ChristophGeske/AppCoder/releases)** for instructions.
 
+4. **Keep it Simple**
+   * Stick to simple games and proof of concept apps, especially if it comes to long complex apps.
+
+5. **Check back for updates**
+   * So many more improvements and ideas can be added to make this app better, so please check back later if you like the idea.
 ---
 
 ## 💡 What is AppCoder?
@@ -111,6 +116,7 @@ AndroidIDE is distributed in the hope that it will be useful, but WITHOUT ANY WA
 
 You should have received a copy of the GNU General Public License along with AndroidIDE. If not, see <https://www.gnu.org/licenses/>.
 ```
+
 
 
 
