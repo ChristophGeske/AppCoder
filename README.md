@@ -51,7 +51,7 @@ Simply describe your app vision, and AppCoder handles the code generation.
 
 * It takes Gemini 2.5 Pro about 3 minutes to generate a snake game code which is rather slow compared to about 20 seconds with 2.5 Flash. 
 
-* GPT-5 is the best model available currently but generating a single snake app costs around $0.30. I would not recommend it becuase this app is also not perfectly optimized yet to reduce expensive tokens. For example even tasks that could be done with a cheaper model will be done by the expensive GPT-5 model if you choose it from the dropdown menu.
+* GPT-5 seems to be the best model available currently but generating a single snake app costs around $0.30. I would not recommend it becuase this app is also not perfectly optimized yet to reduce expensive tokens. For example every file that makes up the app is touched and read again by a small model (flash or mini) when you modeify an app to improve it or fix errors.
 
 * In my testing I saw the best performance using Gemini 2.5 Pro, GPT-5, GPT-5 Mini and Claude Sonnet 4. In the Anthropic app, you can itterate on your app idea quickly using HTML in the browser first. Once you're done itterating on your app idea, you can paste that code into AppCoder to make an android app from it. This might be the quickest way if you do the itterating work in HTML in the browser instead of waiting for the app to build and than itteration by building new apps.
 
@@ -116,6 +116,7 @@ AndroidIDE is distributed in the hope that it will be useful, but WITHOUT ANY WA
 
 You should have received a copy of the GNU General Public License along with AndroidIDE. If not, see <https://www.gnu.org/licenses/>.
 ```
+
 
 
 
