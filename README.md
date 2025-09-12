@@ -83,7 +83,7 @@ The focus of the AppCoder project is to targets these non-programmers. Coding di
 *  **[Rork](https://rork.com)** is a commercial non-open source app for coding apps. It has 7 free itterations per day and you will likely need all of them to build one simple tetris game. Build time is fast and similar to this project. It uses an additional [Expo Go App](https://play.google.com/store/apps/details?id=host.exp.exponent)** to transfear the build app to your phone.
 
 ### 💻 Alternative Full IDEs or Software (mostly focused on programmers, some at casual users too) 
-* [Cursor](https://www.cursor.com/), [OpenAl Codex](https://developers.openai.com/codex), [Devin by Cognition](https://app.devin.ai/), [Windsurf by Cognition](https://windsurf.com/editor), [Github Copiliot](https://github.com/features/copilot), [Gemini Code Assist](https://codeassist.google/), [Claude Code](https://www.anthropic.com/claude-code), [Cline](https://cline.bot/), [Trae](https://www.trae.ai/), [Claude Code](https://www.anthropic.com/claude-code), [Augment Code](https://www.augmentcode.com/), [Roocode](https://github.com/RooCodeInc/Roo-Code), [Void](https://voideditor.com/), [Zed AI](https://zed.dev/ai), [Aider](https://aider.chat/), [Lovable](https://lovable.dev/), [bolt](https://bolt.new/), [Firebase Studio](https://firebase.studio/), [Manus](https://manus.im/guest), [Junie](https://jb.gg/try_junie​), [LocalSite-ai](https://github.com/weise25/LocalSite-ai), [base44](https://base44.com/), [AugmentCode](https://www.augmentcode.com/), [Alibaba's Qoder](https://qoder.com/), [Vercel's v0](https://www.v0.app), [Replit](https://replit.com/ai), [Replit Agent 3](https://replit.com/agent3), [CreateAnything](https://www.createanything.com/), [Google's Jules](https://jules.google.com), [Z-AI’s GLM Coding](https://chat.z.ai/), [Factory AI](https://app.factory.ai/)
+* [Cursor](https://www.cursor.com/), [OpenAl Codex](https://developers.openai.com/codex), [Devin by Cognition](https://app.devin.ai/), [Windsurf by Cognition](https://windsurf.com/editor), [Github Copiliot](https://github.com/features/copilot), [Gemini Code Assist](https://codeassist.google/), [Claude Code](https://www.anthropic.com/claude-code), [Cline](https://cline.bot/), [Trae](https://www.trae.ai/), [Augment Code](https://www.augmentcode.com/), [Roocode](https://github.com/RooCodeInc/Roo-Code), [Void](https://voideditor.com/), [Zed AI](https://zed.dev/ai), [Aider](https://aider.chat/), [Lovable](https://lovable.dev/), [bolt](https://bolt.new/), [Firebase Studio](https://firebase.studio/), [Manus](https://manus.im/guest), [Junie](https://jb.gg/try_junie​), [LocalSite-ai](https://github.com/weise25/LocalSite-ai), [base44](https://base44.com/), [AugmentCode](https://www.augmentcode.com/), [Alibaba's Qoder](https://qoder.com/), [Vercel's v0](https://www.v0.app), [Replit](https://replit.com/ai), [Replit Agent 3](https://replit.com/agent3), [CreateAnything](https://www.createanything.com/), [Google's Jules](https://jules.google.com), [Z-AI’s GLM Coding](https://chat.z.ai/), [Factory AI](https://app.factory.ai/)
 
 ---
 
@@ -116,6 +116,7 @@ AndroidIDE is distributed in the hope that it will be useful, but WITHOUT ANY WA
 
 You should have received a copy of the GNU General Public License along with AndroidIDE. If not, see <https://www.gnu.org/licenses/>.
 ```
+
 
 
 
