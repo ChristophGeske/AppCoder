@@ -106,6 +106,97 @@ This might be interesting for you if you want to implement your own LLM API call
 
 ---
 
+## 🔮 Future Ideas & Development Roadmap
+
+This section outlines a roadmap of potential improvements and features for AppCoder. These are ideas I've collected over time. I don't know if or when we'll get there, but they all seem possible. Some ideas excite me more than others, and if vibe coding keeps improving as I expect, all these features might be written completely autonomously by LLMs soon.
+
+🧠 Core Intelligence & Context
+
+**Persistent Conversation History:** Store generation history within project files so the AI remembers all previous changes, errors, and fixes, even after the app is reloaded.
+
+**Prompt Caching:** Implement context caching to avoid reloading and re-analyzing unchanged code, significantly reducing costs and generation time.
+
+**Session Recovery:** Automatically restore the full conversation context when a user returns to a project, ensuring a seamless workflow.
+
+🤖 Advanced Generation Strategies
+
+**Multi-Model Routing:** Employ a "small-model-first" strategy for initial drafts and simple tasks, intelligently routing complex problems or reviews to more powerful, larger models. (Partly realized already)
+
+**Parallel Generation & A/B Testing:** Run multiple models (or the same model with different parameters) simultaneously to generate several versions of an app, allowing the user to choose the best one.
+
+**Automated Model Selection:** The system intelligently chooses the best model or combination of models based on the app's complexity, category, and historical performance data.
+
+**Model Performance Tracking:** Implement an internal ELO-style rating system that tracks which models and prompts succeed at which types of tasks to continuously optimize the selection process.
+
+**Refactoring & Modernization:** Analyze the user's existing projects and suggest or automatically apply improvements to code structure, dependencies, and style. For example, if a new, better LLM is released or the app receives an update.
+
+**Backward Code Generation:** Plan the user's entire app architecture and skeleton first, then generate individual components in parallel using multiple LLMs for a potentially faster end-to-end process.
+
+🔧 Error Handling & Quality Assurance
+
+**Live Logcat Integration:** Gain access to the running app's logs (Logcat) and crash reports to provide the AI with critical debugging information, moving beyond just build errors.
+
+**Test-Driven Development (TDD):** Automatically generate and run unit tests for logic and UI tests for user interactions before each build to catch regressions and validate functionality.
+
+**Security & Vulnerability Scanning:** Check for common security flaws like hardcoded credentials, insecure network requests, or data exposure, and suggest fixes.
+
+**Performance Profiling:** Automatically measure the generated app's memory usage, battery drain, and startup time, allowing the AI to suggest optimizations.
+
+**Unit Test Prototype App:** Build a test/prototype app first, allowing the user to try out different ideas like various slider versions or layouts, and use the feedback to iteratively improve the app.
+
+💡 User Experience & Interface
+
+**Interactive Chat & Brainstorming Mode:** Allow users to have a conversation with the AI to brainstorm and refine their app idea before committing to a full build.
+
+**Visual Prototyping:** Integrate an image model to generate mockups or a logo based on the app description, letting the user approve the visual design before code generation begins, which could speed up development and give the AI a form of "paper prototype" to use when building the app. Draw-a-UI to allow users to sketch a simple wireframe of their app's interface, which a vision model then translates into a layout and functional components.
+
+**Voice Input:** Enable speech-to-text for describing the app and dictating modifications for a hands-free experience.
+
+**Adaptive UI:** Address UI issues like the code view jumping on input, and add features like collapsible code blocks, a full-screen mode, and smarter layout management.
+
+**Localization & Accessibility:** Build apps with internationalization (multi-language support) from the start and automatically check for accessibility issues (contrast, touch targets, or even allow blind people to use voice to program apps for their special needs).
+
+**Live Preview Environment:** Instead of waiting for a full build, generate a web-based preview of the app that updates in near real-time as the user modifies their description, shortening the iteration cycle.
+
+🚀 Expanding Capabilities
+
+**Device Integration & Sensor Showcase:** Provide app templates with examples of how to access phone sensors (GPS, camera, accelerometer) or how to add safe login functionalities, making the resulting apps easier to build for the AI and possibly safer because it uses tested code parts. The app could then receive badges like "guaranteed safe login" or "guaranteed safe payment module used."
+
+**Hybrid Template System:** Combine the reliability of human-vetted code templates for common app structures (e.g., a to-do list backbone) with the flexibility of AI generation for custom features. This means the user searches for an app, possibly using a GitHub search for compatible apps behind the scenes, and can then adjust the apps to their liking. Or if it's an unfinished old prototype, continue developing it.
+
+**Code-to-Design Translation:** Use vision models to analyze a screenshot of the generated app and compare it against the user's initial request for a feedback loop based on visual results.
+
+**Multimodal Prompts:** Let users combine text, images (for style reference), and audio clips (for sound effects or instructions) into a single, rich prompt for the AI.
+
+🌐 Community & Ecosystem
+
+**Community App Marketplace:** Allow users to publish their successful apps to a shared space where others can use, remix, and build upon them. Could also simply be GitHub.
+
+**Developer Marketplace:** Connect users who have a successful prototype with professional developers to take their app to the next level.
+
+📊 Analytics & Learning
+
+**Automated Prompt Optimization:** Anonymously analyze which app descriptions lead to successful builds and use that data to refine system prompts and guide users toward more effective requests.
+
+**Feature Complexity Estimator:** Before generation, analyze the user's prompt to predict the probability of a successful build and manage user expectations.
+
+**Cost & Time Calculator:** Provide a real-time estimate of the API costs and time required for the generation process based on the app's complexity. Also, during generation, display a cost progress bar so the user can decide to stop the run if API costs seem too high.
+
+**User Data for Fine-Tuning:** With user consent, collect successful generation data to explore the feasibility of fine-tuning specialized models for Android development.
+
+**Visual Dependency Graph:** Generate a simple visual map showing how the different files and components in the project connect to each other, helping users understand the app's architecture. Helps the user understand the structure of the generated code better. The current AppCoder version has an AI overview describing the steps the LLM took, but a visual graph might be more helpful and could be very relevant for finding bugs in the app, especially for programmers who know what might be causing a bug. The overview might be better than having to look at the bare code, which is likely hard to understand anyway when it's all auto-coded.
+
+**AI-Powered Feature Board:** Convert a user's initial complex description into a Kanban or Trello-like board of features. The user can then prioritize, and the AI builds one feature at a time, ensuring a more stable, incremental development process.
+
+🔬 Research Directions
+
+**Agent Architecture Benchmarking:** Empirically compare different agentic approaches (e.g., multi-agent debate, hierarchical planning) against monolithic generation for app creation tasks.
+
+**Cost-Benefit Analysis:** Determine if multi-step, cheap-model-first strategies are ultimately more economical and faster than using a single, powerful model from the start.
+
+**Autonomous Improvement Agent:** Design an agent that can autonomously scan GitHub, research papers, and app store trends to discover and implement better coding patterns and features into the AppCoder system itself. So many coding helper projects exist; automatically finding new features would be nice. Or simply offer the user different choices to personalize AppCoder for their needs. Personalized code is the future.
+
+
 ## 📜 License
 
 ```
@@ -115,6 +206,7 @@ AndroidIDE is distributed in the hope that it will be useful, but WITHOUT ANY WA
 
 You should have received a copy of the GNU General Public License along with AndroidIDE. If not, see <https://www.gnu.org/licenses/>.
 ```
+
 
 
 
