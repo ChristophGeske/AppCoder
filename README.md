@@ -82,6 +82,7 @@ The focus of the AppCoder project is to targets these non-programmers. Coding di
 *  **[Kiki.dev former Appacella](https://www.kiki.dev/)** a closed source website cor coding smartphone apps. It has 30 free itterations a month and 5 per day. Build time is fast and similar to this project. It uses an additional [Expo Go App](https://play.google.com/store/apps/details?id=host.exp.exponent)** to transfear the build app to your phone. Quality was not as good during my testing but they could easily upgrade to better models. 
 *  **[Rork](https://rork.com)** Similar website also using the additional [Expo Go App](https://play.google.com/store/apps/details?id=host.exp.exponent)
 *  **[Anything](https://www.createanything.com/)** Similar website also using the additional [Expo Go App](https://play.google.com/store/apps/details?id=host.exp.exponent). They allow you to choose the latest coding models like Claude Sonnet 4.5 which could be able to create good code. However in my testing the resulting tetris app I build for testing purposes was not working well despite very long generation times. They are also free of charge for the first few apps.
+*  **[Essential Apps Beta (Nothing Phone)](https://playground.nothing.tech/apps) Is as of today (Feb. 22. 2026) still behind a waiting list and seems an Nothing phone exclusive application. Some more info can be found [here](https://nothing.community/en/d/52739-essential-apps-enters-beta).
 
 ### 💻 Alternative Full IDEs or Software (mostly focused on programmers, some at casual users too) 
 * [Cursor](https://www.cursor.com/), [OpenAl Codex](https://developers.openai.com/codex), [Devin by Cognition](https://app.devin.ai/), [Windsurf by Cognition](https://windsurf.com/editor), [Github Copiliot](https://github.com/features/copilot), [Gemini Code Assist](https://codeassist.google/), [Claude Code](https://www.anthropic.com/claude-code), [Cline](https://cline.bot/), [Trae](https://www.trae.ai/), [Augment Code](https://www.augmentcode.com/), [Roo Code](https://github.com/RooCodeInc/Roo-Code), [Void](https://voideditor.com/), [Zed](https://zed.dev/), [Aider](https://aider.chat/), [Lovable](https://lovable.dev/), [Bolt](https://bolt.new/), [Firebase Studio](https://firebase.studio/), [Manus](https://manus.im/guest), [Junie](https://jb.gg/try_junie​), [LocalSite-ai](https://github.com/weise25/LocalSite-ai), [Base44](https://base44.com/), [AugmentCode](https://www.augmentcode.com/), [Alibaba's Qoder](https://qoder.com/), [Vercel's v0](https://www.v0.app), [Replit](https://replit.com/ai), [Replit Agent 3](https://replit.com/agent3), [CreateAnything](https://www.createanything.com/), [Google's Jules](https://jules.google.com), [Z-AI’s GLM Coding](https://chat.z.ai/), [Factory AI](https://app.factory.ai/), [Blitzy](https://blitzy.com/), [Abacus.ai Deep Agent](https://deepagent-desktop.abacus.ai/), [Emergent](https://app.emergent.sh/landing), [Kilo Code](https://kilocode.ai/), [Warp Code](https://www.warp.dev), [Athas Code Editor](https://athas.dev/), [Zoer](https://zoer.ai/), [LingGuang](http://www.lingguang.com/), [Open Code](https://github.com/anomalyco/opencode), [MeDo](https://medo.dev/)
@@ -207,35 +208,3 @@ AndroidIDE is distributed in the hope that it will be useful, but WITHOUT ANY WA
 
 You should have received a copy of the GNU General Public License along with AndroidIDE. If not, see <https://www.gnu.org/licenses/>.
 ```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
