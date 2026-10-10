@@ -42,7 +42,7 @@ Simply describe your app vision, and AppCoder handles the code generation.
 
 - Currently, the limiting factor determining how complex the app can be is the LLM running in the background and the inability of the current AppCoder version to observe the running app and use the logs to fix issues. Both limitations are being actively worked on.
 
-- AppCoder uses **Gemini 3.8 Flash** as the recommended default. This model is incredibly fast, completely free on the Google AI Studio tier, and one of the best choices for simple programming tasks. It can easily generate apps like a to-do list, tic-tac-toe, or even a Tetris game. 
+- AppCoder uses **Gemini 3.8 Flash** as the recommended default. This model is incredibly fast, completely free on the Google AI Studio tier, and one of the best choices for simple programming tasks. It can easily generate apps like a to-do list, tic-tac-toe, or even a Tetris game. You need free API key from Google AI Studio (https://aistudio.google.com/apikey). And for each of the flash models you have a few free API calls that reset after a few hours.
 
 - **Custom Model Input:** If you want to use a model that isn't in the dropdown list—like the more powerful **gemini-3.1-pro**, or even future models like **gemini-4** when they drop—you can simply select "Enter Custom Model ID..." and type the model name directly into the app!
 
@@ -52,11 +52,11 @@ Simply describe your app vision, and AppCoder handles the code generation.
 
 - You also have the option to choose **OpenAI models** (like GPT-6 Luna, Sol, and Astra) in the dropdown menu. While they might allow for highly capable reasoning, they are not free and require an active API billing account.
 
-- Generating a simple app like Snake takes **Gemini 3.8 Flash** only about 20 seconds.
+- Generating a simple app like Snake takes only about 20 seconds.
 
-- In my testing, I saw the best performance using the Gemini Flash/Pro models, the GPT-6 lineup, and Claude 3.5 Sonnet. *Tip: You can iterate on your app idea quickly using Claude/HTML in your browser first. Once you're done iterating on your app idea, you can paste that code into AppCoder's prompt to automatically convert it into an Android app.*
+- In my testing, I saw good results with the 3.7 and 3.8 Gemini Flash models, the GPT-6 lineup and the gemini 3.1Pro are defenetly better but also costly. *Tip: You can also iterate on your app idea quickly using Claude/HTML in your browser first. Once you're done iterating on your app idea, you can paste that code into AppCoder's prompt to automatically convert it into an Android app.*
 
-- If the app is too complex, even the most advanced LLMs will generate unusable code, fail to build, crash on install, or contain major bugs. To give you an example, I tried the following prompt:
+- If the app is too complex, even the advanced LLMs will generate unusable code, fail to build, crash on install, or contain major bugs. To give you an example, I tried the following prompt with Gemini 2.5 Pro:
 
 > *"Create an app that shows me a list of the latest news from reddit using the r/science subreddit. The app should also contain a filter to filter out topics one doesn't like. The filter stores a list of words and when they appear in the title those news are not displayed. The app checks new entries when opened but keeps already loaded links in cache. Pressing the title of an article in the app loads the reddit article."*
 
@@ -64,7 +64,7 @@ Simply describe your app vision, and AppCoder handles the code generation.
 
 > *"Create an app that shows me a list of the latest news from reddit using the r/science subreddit. Just list them on the main screen using the reddit api."*
 
-  With this, I only had to do 2 automatic iterations (where AppCoder passes build errors back to the LLM) to end up with a working app showing me the news in a list! From this state, you can slowly add features checking the results in a test-build-cycle.
+  With this, I only had to do 2 automatic iterations (where AppCoder passes build errors back to the LLM) to end up with a working app showing me the news in a list! From this state, you can slowly add features checking the results in a test-build-cycle. But The newer OpenAI or Gemini Models might be already so much better that this example would work without issus. So simply try out and see how it goes.
 
 - The very first build takes about 10 minutes to set up the Android environment. Follow-up builds typically take ~60 seconds on modern phones, from description to installation.
 
