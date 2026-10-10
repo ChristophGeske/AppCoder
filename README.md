@@ -30,7 +30,7 @@
 
 ## 💡 What is AppCoder?
 
-AppCoder transforms your plain English descriptions into working app code using advanced LLMs like **Google's Gemini 2.5 Pro** and **OpenAI's GPT-5**. 
+AppCoder transforms your plain English descriptions into working app code using advanced LLMs like **Google's Gemini 3.8 Flash** and **OpenAI's GPT-6 lineup**. 
 
 Simply describe your app vision, and AppCoder handles the code generation.
 
@@ -42,31 +42,31 @@ Simply describe your app vision, and AppCoder handles the code generation.
 
 - Currently, the limiting factor determining how complex the app can be is the LLM running in the background and the inability of the current AppCoder version to observe the running app and use the logs to fix issues. Both limitations are being actively worked on.
 
-- AppCoder uses **Gemini 2.5 Pro** with the thinking budget maximized as the default. This free model can generate simple apps like a to-do list, tic-tac-toe, or even a Tetris game. The 2.5 Pro model is completely free and one of the best choices for all kinds of programming tasks. *(Note: In my testing, I only used the Gemini models since they are free. The Gemini 3.8-Flash model also did a great job in tests for simple games!)*
+- AppCoder uses **Gemini 3.8 Flash** as the recommended default. This model is incredibly fast, completely free on the Google AI Studio tier, and one of the best choices for simple programming tasks. It can easily generate apps like a to-do list, tic-tac-toe, or even a Tetris game. 
+
+- **Custom Model Input:** If you want to use a model that isn't in the dropdown list—like the more powerful **gemini-3.1-pro**, or even future models like **gemini-4** when they drop—you can simply select "Enter Custom Model ID..." and type the model name directly into the app!
 
 - A snake game is around the complexity that works well "zero-shot" (on the first try). More complex apps likely require you to build up the app step-by-step, one feature at a time.
 
-- You currently get a free Gemini API key with each Google account. It is possible to create multiple Google accounts to get multiple API keys, each with generous token limits. I'm not sure how long Google can keep this up with other providers charging around $10 for 1 Million output tokens, but right now there is no limit. **Keep an eye on the in-app Request Counter to see if you are hitting your free tier limits!**
+- You currently get a free Gemini API key with each Google account. I'm not sure how long Google can keep this up with other providers charging high prices for output tokens, but right now there is an incredibly generous free limit. **Keep an eye on the in-app Request Counter to see if you are hitting your free tier limits!**
 
-- You also have the option to choose OpenAI models in the dropdown menu. While they might allow for a slightly less buggy build, they are not free and require an active billing account.
+- You also have the option to choose **OpenAI models** (like GPT-6 Luna, Sol, and Astra) in the dropdown menu. While they might allow for highly capable reasoning, they are not free and require an active API billing account.
 
-- It takes Gemini 2.5 Pro about 3 minutes to generate snake game code, which is rather slow compared to about 20 seconds with 2.5 Flash. 
+- Generating a simple app like Snake takes **Gemini 3.8 Flash** only about 20 seconds.
 
-- GPT-5 seems to be the best model available currently, but generating a single snake app costs around $0.30. I would not recommend it because this app is not perfectly optimized yet to reduce expensive tokens. For example, every file that makes up the app is touched and read again by a smaller model when you modify an app to improve it or fix errors.
+- In my testing, I saw the best performance using the Gemini Flash/Pro models, the GPT-6 lineup, and Claude 3.5 Sonnet. *Tip: You can iterate on your app idea quickly using Claude/HTML in your browser first. Once you're done iterating on your app idea, you can paste that code into AppCoder's prompt to automatically convert it into an Android app.*
 
-- In my testing, I saw the best performance using Gemini 2.5 Pro, GPT-5, GPT-5 Mini, and Claude Sonnet. In the Anthropic app, you can iterate on your app idea quickly using HTML in the browser first. Once you're done iterating on your app idea, you can paste that code into AppCoder to make an Android app from it. This might be the quickest way if you do the iterating work in HTML in the browser instead of waiting for the app to build.
-
-- If the app is too complex, even the most advanced LLMs will generate unusable code, fail to build, crash on install, or contain major bugs. To give you an example, I tried the following prompt with 2.5 Pro:
+- If the app is too complex, even the most advanced LLMs will generate unusable code, fail to build, crash on install, or contain major bugs. To give you an example, I tried the following prompt:
 
 > *"Create an app that shows me a list of the latest news from reddit using the r/science subreddit. The app should also contain a filter to filter out topics one doesn't like. The filter stores a list of words and when they appear in the title those news are not displayed. The app checks new entries when opened but keeps already loaded links in cache. Pressing the title of an article in the app loads the reddit article."*
 
-  Even with the 2.5 Pro model and many iterations passing back the error, the build failed all the time. I therefore switched to a simpler prompt:
+  Even with advanced models and many iterations passing back the error, the build failed. I therefore switched to a simpler prompt:
 
 > *"Create an app that shows me a list of the latest news from reddit using the r/science subreddit. Just list them on the main screen using the reddit api."*
 
-  And now I only had to do 2 iterations passing build errors back to the LLM to end up with a working app showing me the news in a list. From this state, you can slowly add features checking the results in a test-build-cycle.
+  With this, I only had to do 2 automatic iterations (where AppCoder passes build errors back to the LLM) to end up with a working app showing me the news in a list! From this state, you can slowly add features checking the results in a test-build-cycle.
 
-- The first build takes about 10 minutes. Follow-up builds typically take ~60 seconds on modern phones, from description to installation.
+- The very first build takes about 10 minutes to set up the Android environment. Follow-up builds typically take ~60 seconds on modern phones, from description to installation.
 
 ---
 
@@ -185,55 +185,55 @@ All AppCoder-specific code lives in `core/app/src/main/java/com/itsaky/androidid
 This section outlines a roadmap of potential improvements and features for AppCoder. These are ideas I've collected over time. I don't know if or when we'll get there, but they all seem possible. Some ideas excite me more than others, and if vibe coding keeps improving as I expect, all these features might be written completely autonomously by LLMs soon.
 
 **🧠 Core Intelligence & Context**
-* **Persistent Conversation History:** Store generation history within project files so the AI remembers all previous changes, errors, and fixes, even after the app is reloaded.
-* **Prompt Caching:** Implement context caching to avoid reloading and re-analyzing unchanged code, significantly reducing costs and generation time.
-* **Session Recovery:** Automatically restore the full conversation context when a user returns to a project, ensuring a seamless workflow.
+- **Persistent Conversation History:** Store generation history within project files so the AI remembers all previous changes, errors, and fixes, even after the app is reloaded.
+- **Prompt Caching:** Implement context caching to avoid reloading and re-analyzing unchanged code, significantly reducing costs and generation time.
+- **Session Recovery:** Automatically restore the full conversation context when a user returns to a project, ensuring a seamless workflow.
 
 **🤖 Advanced Generation Strategies**
-* **Multi-Model Routing:** Employ a "small-model-first" strategy for initial drafts and simple tasks, intelligently routing complex problems or reviews to more powerful, larger models. (Partly realized already)
-* **Parallel Generation & A/B Testing:** Run multiple models (or the same model with different parameters) simultaneously to generate several versions of an app, allowing the user to choose the best one.
-* **Automated Model Selection:** The system intelligently chooses the best model or combination of models based on the app's complexity, category, and historical performance data.
-* **Model Performance Tracking:** Implement an internal ELO-style rating system that tracks which models and prompts succeed at which types of tasks to continuously optimize the selection process.
-* **Refactoring & Modernization:** Analyze the user's existing projects and suggest or automatically apply improvements to code structure, dependencies, and style.
-* **Backward Code Generation:** Plan the user's entire app architecture and skeleton first, then generate individual components in parallel using multiple LLMs for a potentially faster end-to-end process.
+- **Multi-Model Routing:** Employ a "small-model-first" strategy for initial drafts and simple tasks, intelligently routing complex problems or reviews to more powerful, larger models. (Partly realized already)
+- **Parallel Generation & A/B Testing:** Run multiple models (or the same model with different parameters) simultaneously to generate several versions of an app, allowing the user to choose the best one.
+- **Automated Model Selection:** The system intelligently chooses the best model or combination of models based on the app's complexity, category, and historical performance data.
+- **Model Performance Tracking:** Implement an internal ELO-style rating system that tracks which models and prompts succeed at which types of tasks to continuously optimize the selection process.
+- **Refactoring & Modernization:** Analyze the user's existing projects and suggest or automatically apply improvements to code structure, dependencies, and style.
+- **Backward Code Generation:** Plan the user's entire app architecture and skeleton first, then generate individual components in parallel using multiple LLMs for a potentially faster end-to-end process.
 
 **🔧 Error Handling & Quality Assurance**
-* **Live Logcat Integration:** Gain access to the running app's logs (Logcat) and crash reports to provide the AI with critical debugging information, moving beyond just build errors.
-* **Test-Driven Development (TDD):** Automatically generate and run unit tests for logic and UI tests for user interactions before each build to catch regressions and validate functionality.
-* **Security & Vulnerability Scanning:** Check for common security flaws like hardcoded credentials, insecure network requests, or data exposure, and suggest fixes.
-* **Performance Profiling:** Automatically measure the generated app's memory usage, battery drain, and startup time, allowing the AI to suggest optimizations.
-* **Unit Test Prototype App:** Build a test/prototype app first, allowing the user to try out different ideas like various slider versions or layouts, and use the feedback to iteratively improve the main app.
+- **Live Logcat Integration:** Gain access to the running app's logs (Logcat) and crash reports to provide the AI with critical debugging information, moving beyond just build errors.
+- **Test-Driven Development (TDD):** Automatically generate and run unit tests for logic and UI tests for user interactions before each build to catch regressions and validate functionality.
+- **Security & Vulnerability Scanning:** Check for common security flaws like hardcoded credentials, insecure network requests, or data exposure, and suggest fixes.
+- **Performance Profiling:** Automatically measure the generated app's memory usage, battery drain, and startup time, allowing the AI to suggest optimizations.
+- **Unit Test Prototype App:** Build a test/prototype app first, allowing the user to try out different ideas like various slider versions or layouts, and use the feedback to iteratively improve the main app.
 
 **💡 User Experience & Interface**
-* **Interactive Chat & Brainstorming Mode:** Allow users to have a conversation with the AI to brainstorm and refine their app idea before committing to a full build.
-* **Visual Prototyping:** Integrate an image model to generate mockups or a logo based on the app description, letting the user approve the visual design before code generation begins. Draw-a-UI allows users to sketch a simple wireframe of their app's interface, which a vision model then translates into a layout and functional components.
-* **Voice Input:** Enable speech-to-text for describing the app and dictating modifications for a hands-free experience.
-* **Adaptive UI:** Address UI issues like the code view jumping on input, and add features like collapsible code blocks, a full-screen mode, and smarter layout management.
-* **Localization & Accessibility:** Build apps with internationalization (multi-language support) from the start and automatically check for accessibility issues.
-* **Live Preview Environment:** Instead of waiting for a full build, generate a web-based preview of the app that updates in near real-time as the user modifies their description.
+- **Interactive Chat & Brainstorming Mode:** Allow users to have a conversation with the AI to brainstorm and refine their app idea before committing to a full build.
+- **Visual Prototyping:** Integrate an image model to generate mockups or a logo based on the app description, letting the user approve the visual design before code generation begins. Draw-a-UI allows users to sketch a simple wireframe of their app's interface, which a vision model then translates into a layout and functional components.
+- **Voice Input:** Enable speech-to-text for describing the app and dictating modifications for a hands-free experience.
+- **Adaptive UI:** Address UI issues like the code view jumping on input, and add features like collapsible code blocks, a full-screen mode, and smarter layout management.
+- **Localization & Accessibility:** Build apps with internationalization (multi-language support) from the start and automatically check for accessibility issues.
+- **Live Preview Environment:** Instead of waiting for a full build, generate a web-based preview of the app that updates in near real-time as the user modifies their description.
 
 **🚀 Expanding Capabilities**
-* **Device Integration & Sensor Showcase:** Provide app templates with examples of how to access phone sensors (GPS, camera, accelerometer) or how to add safe login functionalities, making the resulting apps easier to build for the AI and safer because it uses tested code parts.
-* **Hybrid Template System:** Combine the reliability of human-vetted code templates for common app structures with the flexibility of AI generation for custom features.
-* **Code-to-Design Translation:** Use vision models to analyze a screenshot of the generated app and compare it against the user's initial request for a visual feedback loop.
-* **Multimodal Prompts:** Let users combine text, images (for style reference), and audio clips (for sound effects or instructions) into a single, rich prompt for the AI.
+- **Device Integration & Sensor Showcase:** Provide app templates with examples of how to access phone sensors (GPS, camera, accelerometer) or how to add safe login functionalities, making the resulting apps easier to build for the AI and safer because it uses tested code parts.
+- **Hybrid Template System:** Combine the reliability of human-vetted code templates for common app structures with the flexibility of AI generation for custom features.
+- **Code-to-Design Translation:** Use vision models to analyze a screenshot of the generated app and compare it against the user's initial request for a visual feedback loop.
+- **Multimodal Prompts:** Let users combine text, images (for style reference), and audio clips (for sound effects or instructions) into a single, rich prompt for the AI.
 
 **🌐 Community & Ecosystem**
-* **Community App Marketplace:** Allow users to publish their successful apps to a shared space where others can use, remix, and build upon them.
-* **Developer Marketplace:** Connect users who have a successful prototype with professional developers to take their app to the next level.
+- **Community App Marketplace:** Allow users to publish their successful apps to a shared space where others can use, remix, and build upon them.
+- **Developer Marketplace:** Connect users who have a successful prototype with professional developers to take their app to the next level.
 
 **📊 Analytics & Learning**
-* **Automated Prompt Optimization:** Anonymously analyze which app descriptions lead to successful builds and use that data to refine system prompts.
-* **Feature Complexity Estimator:** Before generation, analyze the user's prompt to predict the probability of a successful build and manage user expectations.
-* **Cost & Time Calculator:** Provide a real-time estimate of the API costs and time required for the generation process based on the app's complexity.
-* **Visual Dependency Graph:** Generate a simple visual map showing how the different files and components in the project connect to each other, helping users understand the app's architecture.
-* **AI-Powered Feature Board:** Convert a user's initial complex description into a Kanban or Trello-like board of features. The user can then prioritize, and the AI builds one feature at a time, ensuring a more stable, incremental development process.
+- **Automated Prompt Optimization:** Anonymously analyze which app descriptions lead to successful builds and use that data to refine system prompts.
+- **Feature Complexity Estimator:** Before generation, analyze the user's prompt to predict the probability of a successful build and manage user expectations.
+- **Cost & Time Calculator:** Provide a real-time estimate of the API costs and time required for the generation process based on the app's complexity.
+- **Visual Dependency Graph:** Generate a simple visual map showing how the different files and components in the project connect to each other, helping users understand the app's architecture.
+- **AI-Powered Feature Board:** Convert a user's initial complex description into a Kanban or Trello-like board of features. The user can then prioritize, and the AI builds one feature at a time, ensuring a more stable, incremental development process.
 
 **🔬 Research Directions**
-* **Agent Architecture Benchmarking:** Empirically compare different agentic approaches against monolithic generation for app creation tasks.
-* **Cost-Benefit Analysis:** Determine if multi-step, cheap-model-first strategies are ultimately more economical and faster than using a single, powerful model from the start.
-* **Autonomous Improvement Agent:** Design an agent that can autonomously scan GitHub, research papers, and app store trends to discover and implement better coding patterns and features into the AppCoder system itself.
-
+- **Agent Architecture Benchmarking:** Empirically compare different agentic approaches against monolithic generation for app creation tasks.
+- **Cost-Benefit Analysis:** Determine if multi-step, cheap-model-first strategies are ultimately more economical and faster than using a single, powerful model from the start.
+- **Autonomous Improvement Agent:** Design an agent that can autonomously scan GitHub, research papers, and app store trends to discover and implement better coding patterns and features into the AppCoder system itself.
+- 
 ## 📜 License
 
 ```text
