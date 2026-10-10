@@ -35,22 +35,6 @@ class ProjectOperationsHandler(
     private fun logViaBridge(message: String) = bridge.appendToLogBridge(message)
     private fun errorViaBridge(message: String, e: Exception?) = bridge.handleErrorBridge(message, e)
 
-    private fun getVersionComparator(): Comparator<String> {
-        return Comparator { v1, v2 ->
-            val parts1 = v1.split('.').mapNotNull { it.toIntOrNull() }
-            val parts2 = v2.split('.').mapNotNull { it.toIntOrNull() }
-            val maxParts = maxOf(parts1.size, parts2.size)
-            for (i in 0 until maxParts) {
-                val p1 = parts1.getOrElse(i) { 0 }
-                val p2 = parts2.getOrElse(i) { 0 }
-                if (p1 != p2) {
-                    return@Comparator p1.compareTo(p2)
-                }
-            }
-            0
-        }
-    }
-
     fun projectExists(appName: String): Boolean {
         if (appName.isBlank()) return false
         val projectDir = File(projectsBaseDir, appName)
@@ -126,15 +110,8 @@ class ProjectOperationsHandler(
             ?: emptyList()
     }
 
-    fun findProjectVersions(baseAppName: String): List<String> {
-        val fullPatternRegex = "^${Regex.escape(baseAppName)}_v(\\d+(?:\\.\\d+)*)$".toRegex()
-        val versions = projectsBaseDir.listFiles { dir ->
-            dir.isDirectory && fullPatternRegex.matches(dir.name)
-        }?.mapNotNull { dir ->
-            fullPatternRegex.find(dir.name)?.groupValues?.get(1)
-        } ?: emptyList()
-        return versions.sortedWith(getVersionComparator())
-    }
+    fun findProjectVersions(baseAppName: String): List<String> =
+        AppVersionStore.findVersions(projectsBaseDir, baseAppName)
 
     fun overwriteProjectWithVersion(baseProjectName: String, versionProjectName: String, shouldBranch: Boolean): Boolean {
         Log.i(TAG, "overwriteProjectWithVersion called. Base: '$baseProjectName', Version: '$versionProjectName', shouldBranch: $shouldBranch")
@@ -165,79 +142,18 @@ class ProjectOperationsHandler(
         }
     }
 
+    /**
+     * Stores [sourceProjectDir] as a new version. NOTE: only call this for code that is known to
+     * build and install; the normal path is AppVersionStore.onInstallSucceeded().
+     */
     fun createVersionedCopy(sourceProjectDir: File, baseProjectName: String): File? {
-        Log.i(TAG, "createVersionedCopy called for source: '${sourceProjectDir.name}'")
-        if (!sourceProjectDir.exists()) {
-            errorViaBridge("Source project directory does not exist for versioning.", null)
-            return null
-        }
-
-        try {
-            val sourceVersionFile = File(sourceProjectDir, VERSION_SOURCE_FILE)
-            val sourceVersionProjectName = if (sourceVersionFile.exists()) sourceVersionFile.readText().trim() else null
-            Log.d(TAG, "Bookmark file check in WORKBENCH ('${sourceProjectDir.name}'): Found '${sourceVersionProjectName ?: "null"}'")
-
-            val newVersionName: String
-
-            if (sourceVersionProjectName != null) {
-                // BRANCHING LOGIC
-                Log.i(TAG, "Entering BRANCHING logic path.")
-                val sourceVersionNumber = sourceVersionProjectName.substringAfterLast("_v")
-                val allVersions = findProjectVersions(baseProjectName)
-                val childVersions = allVersions.filter { v -> v.startsWith("$sourceVersionNumber.") && v.split('.').size == sourceVersionNumber.split('.').size + 1 }
-                Log.d(TAG, "Source: '$sourceVersionNumber', Found child versions: $childVersions")
-
-                val newVersionNumber = if (childVersions.isEmpty()) {
-                    "$sourceVersionNumber.1"
-                } else {
-                    val latestChild = childVersions.sortedWith(getVersionComparator()).last()
-                    val parts = latestChild.split('.').toMutableList()
-                    parts[parts.size - 1] = ((parts.last().toIntOrNull() ?: 0) + 1).toString()
-                    parts.joinToString(".")
-                }
-                newVersionName = "${baseProjectName}_v${newVersionNumber}"
-                Log.i(TAG, "Calculated new branch version name: '$newVersionName'")
-            } else {
-                // LINEAR PROGRESSION LOGIC
-                Log.i(TAG, "Entering LINEAR logic path.")
-                val allVersions = findProjectVersions(baseProjectName)
-                val latestMajorVersion = allVersions.filter { !it.contains('.') }.mapNotNull { it.toIntOrNull() }.maxOrNull() ?: 0
-                val newVersionNumber = latestMajorVersion + 1
-                newVersionName = "${baseProjectName}_v$newVersionNumber"
-                Log.i(TAG, "Calculated new linear version name: '$newVersionName'")
-            }
-
-            val newVersionDir = File(projectsBaseDir, newVersionName)
-            if (newVersionDir.exists()) {
-                errorViaBridge("Version directory '$newVersionName' already exists. Aborting snapshot.", null)
-                return null
-            }
-
-            sourceProjectDir.copyRecursively(newVersionDir, overwrite = true)
-            Log.d(TAG, "Copied source to new snapshot directory: '${newVersionDir.name}'")
-
-            // --- CRITICAL FIX: Part 1 ---
-            // The bookmark should be deleted from the NEW SNAPSHOT as it represents a clean state.
-            File(newVersionDir, VERSION_SOURCE_FILE).delete()
-            Log.d(TAG, "Deleted bookmark (if any) from NEW snapshot ('${newVersionDir.name}').")
-
-
-            // --- CRITICAL FIX: Part 2 ---
-            // The bookmark MUST also be deleted from the WORKBENCH (sourceProjectDir)
-            // after a successful snapshot. This resets the workbench for the next linear progression.
-            if (sourceVersionFile.exists()) {
-                sourceVersionFile.delete()
-                Log.i(TAG, "CRITICAL_CLEANUP: Deleted bookmark from WORKBENCH ('${sourceProjectDir.name}') to reset state.")
-            } else {
-                Log.d(TAG, "No bookmark file found in WORKBENCH ('${sourceProjectDir.name}') to delete (normal for linear progression).")
-            }
-
-            logViaBridge("Successfully created snapshot at '${newVersionDir.absolutePath}'")
-            return newVersionDir
-
+        return try {
+            val dir = AppVersionStore.commitVerifiedVersion(sourceProjectDir)
+            logViaBridge("Successfully created snapshot at '${dir.absolutePath}'")
+            dir
         } catch (e: Exception) {
             errorViaBridge("Failed to create versioned copy: ${e.message}", e)
-            return null
+            null
         }
     }
 }

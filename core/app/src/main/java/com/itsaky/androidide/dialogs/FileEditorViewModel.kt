@@ -67,6 +67,25 @@ class FileEditorViewModel(application: Application) : AndroidViewModel(applicati
     private var _storedModelId: String = prefs.getString(KEY_GEMINI_MODEL, DEFAULT_GEMINI_MODEL) ?: DEFAULT_GEMINI_MODEL
     val storedModelId: String get() = _storedModelId
 
+    // to track the counter
+    // to track the counter
+    // to track the counter per model
+    private val _dailyRequestCount = MutableLiveData<Pair<String, Int>>()
+    val dailyRequestCount: LiveData<Pair<String, Int>> = _dailyRequestCount
+
+    // ADD THESE LINES FOR THE DOWNGRADE PROMPT:
+    private val _downgradePromptEvent = MutableLiveData<DowngradeData?>()
+    val downgradePromptEvent: LiveData<DowngradeData?> = _downgradePromptEvent
+
+    fun clearDowngradeEvent() {
+        _downgradePromptEvent.value = null
+    }
+
+    fun setDowngradeEnabled(enabled: Boolean) {
+        geminiHelper.allowDowngradePrompt = enabled
+    }
+    // END OF ADDED LINES
+
     var projectsBaseDir: File? = null
         set(value) {
             field = value
@@ -129,8 +148,12 @@ class FileEditorViewModel(application: Application) : AndroidViewModel(applicati
     override fun triggerBuildBridge(projectDir: File, runAfterBuild: Boolean) {
         runOnMainThread {
             try {
+                // NO snapshot here anymore. A version (_vN) is stored only after this build was
+                // installed successfully (AppVersionStore.onInstallSucceeded), so broken code is
+                // never stored as a version. We only remember which workbench is being built.
+                AppVersionStore.registerPendingBuild(projectDir)
+
                 com.itsaky.androidide.projects.IProjectManager.getInstance().openProject(projectDir)
-                com.itsaky.androidide.preferences.internal.GeneralPreferences.lastOpenedProject = projectDir.absolutePath
 
                 val appCtx = getApplication<Application>().applicationContext
                 val intent = android.content.Intent(
@@ -138,22 +161,14 @@ class FileEditorViewModel(application: Application) : AndroidViewModel(applicati
                     com.itsaky.androidide.activities.editor.EditorActivityKt::class.java
                 ).apply {
                     putExtra(com.itsaky.androidide.activities.editor.EditorActivityKt.EXTRA_AUTO_BUILD_PROJECT, true)
-                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 }
                 appCtx.startActivity(intent)
-                appendToViewModelLog("🛠️ Auto-build started for '${projectDir.name}'.\n")
+                appendToViewModelLog("🛠️ Auto-build started for '${projectDir.name}'. A version is saved only after it builds and installs successfully.\n")
             } catch (e: Exception) {
                 handleViewModelError("Failed to trigger build: ${e.message}", e)
             }
         }
-    }
-
-    private val geminiHelper: GeminiHelper by lazy {
-        GeminiHelper(
-            apiKeyProvider = { _storedApiKey },
-            errorHandlerCallback = { message, e -> handleViewModelError(message, e) },
-            uiThreadExecutor = { block -> runOnMainThread(block) }
-        )
     }
 
     private val projectOperationsHandler: ProjectOperationsHandler by lazy {
@@ -162,6 +177,20 @@ class FileEditorViewModel(application: Application) : AndroidViewModel(applicati
             directLogAppender = { msg -> appendToLogBridge(msg) },
             directErrorHandler = { message, e -> handleErrorBridge(message, e) },
             bridge = this
+        )
+    }
+
+    private val geminiHelper: GeminiHelper by lazy {
+        GeminiHelper(
+            apiKeyProvider = { _storedApiKey },
+            errorHandlerCallback = { message, e -> handleViewModelError(message, e) },
+            uiThreadExecutor = { block -> runOnMainThread(block) },
+            onDowngradeSuggested = { data ->
+                _downgradePromptEvent.postValue(data)
+            },
+            onRequestFired = { modelName ->
+                incrementRequestCount(modelName)
+            }
         )
     }
 
@@ -177,7 +206,26 @@ class FileEditorViewModel(application: Application) : AndroidViewModel(applicati
     private var currentApiKeyForWorkflow: String = ""
 
     init {
+        loadDailyRequestCount()
         geminiHelper.setModel(_storedModelId)
+    }
+
+    private fun loadDailyRequestCount(modelId: String = storedModelId) {
+        val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())
+        // Appending the date directly to the key prevents us from ever needing to "clear" preferences manually
+        val count = prefs.getInt("req_${today}_$modelId", 0)
+        _dailyRequestCount.postValue(Pair(modelId, count))
+    }
+
+    private fun incrementRequestCount(modelId: String) {
+        runOnMainThread {
+            val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())
+            val key = "req_${today}_$modelId"
+            var count = prefs.getInt(key, 0)
+            count++
+            prefs.edit().putInt(key, count).apply()
+            _dailyRequestCount.value = Pair(modelId, count)
+        }
     }
 
     private fun loadExistingProjectNames() {
@@ -187,6 +235,7 @@ class FileEditorViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+
     fun onProjectNameSelected(appName: String) {
         viewModelScope.launch(Dispatchers.IO) {
             val versions = projectOperationsHandler.findProjectVersions(appName)
@@ -194,7 +243,16 @@ class FileEditorViewModel(application: Application) : AndroidViewModel(applicati
                 if (versions.isNotEmpty()) {
                     val displayList = mutableListOf<String>()
                     val latestVersion = versions.last()
-                    displayList.add("Latest (_v$latestVersion)")
+                    // "Latest" continues the working copy. Only if it has unverified changes made in
+                    // THIS session (IDE was just in the background) do they carry over; after a full
+                    // restart they are discarded and "Latest" means the last working version.
+                    val workbench = projectsBaseDir?.let { File(it, appName) }
+                    val hasLiveChanges = workbench != null &&
+                            AppVersionStore.workbenchState(workbench) == AppVersionStore.WorkbenchState.UNVERIFIED_THIS_SESSION
+                    displayList.add(
+                        if (hasLiveChanges) "Latest (_v$latestVersion + unverified changes)"
+                        else "Latest (_v$latestVersion)"
+                    )
                     displayList.addAll(versions.reversed().map { "_v$it" })
                     _projectVersions.value = displayList
                     _versionsUiVisible.value = true
@@ -220,6 +278,7 @@ class FileEditorViewModel(application: Application) : AndroidViewModel(applicati
         prefs.edit().putString(KEY_GEMINI_MODEL, modelId).apply()
         this._storedModelId = modelId
         geminiHelper.setModel(modelId)
+        loadDailyRequestCount(modelId) // Loads and displays the count for the newly selected model
     }
 
     fun updateIsModifyingProjectFlag(isModifying: Boolean) {
@@ -295,7 +354,24 @@ class FileEditorViewModel(application: Application) : AndroidViewModel(applicati
                 appendToViewModelLog("Automated Retry: Skipping workbench overwrite.\n")
                 Log.i(TAG, "This is an automated retry, skipping workbench overwrite.")
             } else {
-                Log.i(TAG, "This is a new/linear modification from 'Latest'. No workbench overwrite needed.")
+                Log.i(TAG, "This is a new/linear modification from 'Latest'.")
+                val workbench = File(projectsBaseDir!!, appName)
+                if (workbench.isDirectory &&
+                    AppVersionStore.workbenchState(workbench) == AppVersionStore.WorkbenchState.UNVERIFIED_PREVIOUS_SESSION
+                ) {
+                    // The IDE was closed completely since these changes were made and they were never
+                    // built + installed successfully -> they are not a stored version. Start again
+                    // from the last working version.
+                    val latest = projectOperationsHandler.findProjectVersions(appName).lastOrNull()
+                    if (latest != null) {
+                        updateViewModelState(AiWorkflowState.PREPARING_EXISTING_PROJECT)
+                        appendToViewModelLog("♻️ Discarding unverified changes from a previous session. Starting from the last working version _v$latest.\n")
+                        val ok = projectOperationsHandler.overwriteProjectWithVersion(appName, "${appName}_v$latest", false)
+                        if (!ok) return@launch
+                    } else {
+                        appendToViewModelLog("ℹ️ Found unverified changes from a previous session, but no working version exists yet. Continuing with the working copy.\n")
+                    }
+                }
             }
 
             if (!isRetryPrompt) {
@@ -389,5 +465,9 @@ class FileEditorViewModel(application: Application) : AndroidViewModel(applicati
             }
             if (_statusText.value != newStatusText) _statusText.value = newStatusText
         }
+    }
+
+    fun fetchModelsFromApi(provider: String, apiKey: String, callback: (List<String>) -> Unit) {
+        geminiHelper.fetchAvailableModels(provider, apiKey, callback)
     }
 }

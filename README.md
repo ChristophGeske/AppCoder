@@ -90,9 +90,9 @@ The focus of the AppCoder project is to targets these non-programmers. Coding di
 
 ## 🛠️ For more serious Developers: Building AppCoder from Source
 
-This section is for those who want to compile AppCoder from its source code. **If you just downloaded the APK, you can skip this.**
+This section is for those who want to compile AppCoder from its source code. **If you just want to use and downloaded the APK, you can skip this.**
 
-Unfortenatly a documentation is not available currently since to much is still changing. Here are some tips which I believe help in getting started if you realy need to look into the code.
+Unfortunately a documentation is not available currently since too much is still changing. Here are some tips which I believe help in getting started if you really need to look into the code.
 
 This might be interesting for you if you want to implement your own LLM API calls or if you want to implement advanced LLM agent features to improve the code generation like automated testing and such features.
 
@@ -104,8 +104,76 @@ This might be interesting for you if you want to implement your own LLM API call
 5.  **Troubleshooting Builds from Source:**
     *   **Gradle build fails in Android Studio:** Try running the build process again.
     *   **Build of the *generated app* (by AppCoder) on the phone fails (during its terminal run):** Uninstall the partially built app and restart the build process within AppCoder.
-6. You find the LLM related code under AppCoder\core\app\src\main\java\com\itsaky\androidide\dialogs. Also the package com.itsaky.androidide.activities.editor has modeficatons. The rest of the app is basically the original AndroidIDE code only modefied in a few areas for example getting it streamlined to better work for LLM based development.
 
+
+## ⚙️ How AppCoder Works (The AI Pipeline)
+
+AppCoder uses a "Single-Shot" autonomous pipeline. Single shot to saves on API request calls but possibly there are more token efficient ways than dumping all the code into the LLM (but for the first call it is fine since the base code is tiny anyway and easily fits in the context window of most models). However, might require more tokens. Here is exactly what happens when you press **Generate**:
+
+### 1. Context Gathering 📂
+* **New Apps:** AppCoder instantly creates a standard Android/Gradle skeleton project (SDK 21-34) on your phone.
+* **Existing Apps:** AppCoder scans your project directory, skipping heavy build folders and caching only your actual code files (`.kt`, `.xml`, `.gradle`).
+
+### 2. The AI Request 🧠
+Your prompt and all your project files are bundled into a single, massive context window and sent to the LLM.
+* **Dynamic Fallbacks:** If the selected model is overloaded (HTTP 503) or out of quota (HTTP 429), AppCoder automatically prompts you to downgrade to the next available model in the chain so you don't lose your progress.
+* **Strict Adherence:** The AI is strictly locked into a JSON Schema. It is not allowed to return conversational text—it must return exact file paths and complete code blocks.
+
+### 3. Code Application 💾
+AppCoder intercepts the JSON response, validates it, and writes the new/modified files directly to your phone's local storage.
+
+### 4. Auto-Build & The Auto-Fix Loop 🛠️
+Once the files are saved, AppCoder hands the project over to the local Gradle daemon to compile the APK.
+* **✅ If the build succeeds:** The app is installed on your phone.
+* **❌ If the build fails:** AppCoder enters the **Auto-Fix Loop**. It silently intercepts the raw Gradle compiler errors, sends them *back* to the LLM alongside your buggy code, and asks the AI to patch its own mistakes. (AppCoder will attempt this up to 3 times automatically).
+
+```text
+[ User Prompt ] + [ Project Files ] 
+        │
+        ▼
+ 🌐 LLM Processing (Gemini / OpenAI / Claude)
+   (Auto-Downgrades on server non available - asks user to confirm)
+        │
+        ▼
+[ JSON Code Output ] 
+        │
+        ▼
+💾 Files Written to Phone Storage
+        │
+        ▼
+⚙️ Gradle Auto-Build
+        ├──❌ Build Fails ──▶ (Sends Compiler Errors to LLM) ──┐
+        │                                                      │
+        ▼                                                  [ Auto-Fix ]
+✅ Build Succeeds                                              │
+        │                                                      │
+        ▼                                                      ▼
+ 📱 App Installed! ◀───────────────────────────────────────────┘
+
+### 🗺️ Where to find things in the code
+
+All AppCoder-specific code lives in `core/app/src/main/java/com/itsaky/androidide/dialogs/`. The rest of the app is mostly original AndroidIDE code.
+
+| I want to change... | Look at |
+|---|---|
+| The main AI screen (inputs, model dropdown, buttons) | `dialogs/FileEditorActivity.kt` and `res/layout/activity_file_editor.xml` |
+| Screen state and what happens on "Generate" | `FileEditorViewModel.kt`, `ViewModelFileEditorBridge.kt` |
+| The step-by-step AI flow (summarize, select, plan, write, summary, build-fix) and all prompts | `GeminiWorkflowCoordinator.kt` |
+| API calls, models, thinking settings, retries, JSON schemas, response parsing | `GeminiHelper.kt` |
+| Chat history sent to the model | `GeminiConversation.kt` |
+| Which project files are scanned, and how AI output is written to disk | `ProjectFileUtils.kt` |
+| Project creation from a template, version snapshots and branching | `ProjectOperationsHandler.kt` |
+| Auto-fix loop (retry after failed builds, attempt limit) | `AutoFixStateManager.kt` |
+| Workflow states shown in the UI | `AiWorkflowState.kt` |
+| Foreground service while the AI works | `services/AiForegroundService`, `AiServiceManager.kt` |
+| Entry from the home screen to the AI editor | `activities/MainActivity.kt` (`buttonLaunchAiEditor`) |
+| UI texts and button labels | `res/values/strings.xml` |
+| What happens after a build succeeds or fails (snapshots, auto-fix trigger) | `handlers/EditorBuildEventListener.kt, then activities/editor/EditorHandlerActivity.kt` |
+| The contract between the AI workflow and the UI | `dialogs/ViewModelFileEditorBridge.kt` |
+| Where the API key and selected model are saved | `FileEditorViewModel.kt (SharedPreferences "GeminiPrefs_AppCoder_VM")` |
+| HTTP/JSON libraries | `core/app/build.gradle.kts (OkHttp 4.10.0; JSON is Android’s org.json)` |
+
+Troubleshooting: if Gradle fails with `Unsupported class file major version 69`, Gradle is running on JDK 25. Set the Gradle JDK to 21 in Android Studio (Settings → Build Tools → Gradle) and check `JAVA_HOME`.
 ---
 
 ## 🔮 Future Ideas & Development Roadmap

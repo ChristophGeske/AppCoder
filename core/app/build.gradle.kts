@@ -28,6 +28,12 @@ buildscript {
 android {
   namespace = BuildConfig.packageName
 
+  packaging {
+    jniLibs {
+      useLegacyPackaging = true
+    }
+  }
+
   defaultConfig {
     applicationId = BuildConfig.packageName
     vectorDrawables.useSupportLibrary = true

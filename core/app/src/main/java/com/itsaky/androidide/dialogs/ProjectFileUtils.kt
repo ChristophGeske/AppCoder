@@ -25,12 +25,14 @@ object ProjectFileUtils {
         val files = currentDir.listFiles() ?: return
         for (file in files) {
             if (file.isDirectory) {
-                if (file.name in arrayOf("build", ".gradle", ".git", ".idea", "generated", "libs", "obj", "bin")) { // Added more common ignores
+                // Added "gradle" to skip the heavy wrapper jar
+                if (file.name in arrayOf("build", ".gradle", ".git", ".idea", "generated", "libs", "obj", "bin", "gradle")) {
                     continue
                 }
                 collectFilePaths(baseDir, file, result)
             } else {
-                if (isCodeFile(file.name)) {
+                // Pass the actual File object so we can check its size
+                if (isCodeFile(file)) {
                     val relativePath = file.relativeTo(baseDir).path.replace(File.separatorChar, '/')
                     result.add(relativePath)
                 }
@@ -38,10 +40,29 @@ object ProjectFileUtils {
         }
     }
 
-    private fun isCodeFile(filename: String): Boolean {
-        val codeExtensions = arrayOf(".kt", ".java", ".xml", ".gradle", ".kts", ".properties", ".json", ".md") // Added .kts
-        return codeExtensions.any { filename.lowercase(Locale.ROOT).endsWith(it) }
+    private fun isCodeFile(file: File): Boolean {
+        val filename = file.name.lowercase(Locale.ROOT)
+
+        // 1. Explicitly ignore binaries and local env files
+        if (filename.endsWith(".jar") || filename.endsWith(".aar") || filename.endsWith(".so") || filename.endsWith(".apk")) return false
+        if (filename == "local.properties" || filename == "gradlew" || filename == "gradlew.bat") return false
+
+        // 2. Only allow specific text extensions
+        val codeExtensions = arrayOf(".kt", ".java", ".xml", ".gradle", ".kts", ".properties", ".json", ".md", ".toml")
+        val hasValidExtension = codeExtensions.any { filename.endsWith(it) }
+
+        if (!hasValidExtension) return false
+
+        // 3. SIZE LIMIT: Ignore files larger than 100 KB (102,400 bytes)
+        // This is the crucial fix to prevent 503 Overloaded errors!
+        if (file.length() > 100 * 1024) {
+            Log.w(TAG, "Skipping large file to save AI tokens: ${file.name} (${file.length()} bytes)")
+            return false
+        }
+
+        return true
     }
+
 
     fun processFileChangesAndDeletions(
         projectDir: File,
@@ -162,5 +183,66 @@ object ProjectFileUtils {
         // 3. Generate a default based on appName
         val sanitizedAppName = appName.filter { it.isLetterOrDigit() }.lowercase(Locale.getDefault()).ifEmpty { "myapp" }
         return "com.example.$sanitizedAppName"
+    }
+
+    /**
+     * Extracts only actionable compiler errors (Kotlin, Java, AAPT/XML, Gradle dependency errors)
+     * and strips daemon logs, stack traces, and boilerplate to keep LLM context minimal.
+     */
+    fun extractRelevantCompilerErrors(rawOutput: String, maxChars: Int = 2500): String {
+        if (rawOutput.isBlank()) return "Unknown build failure (no log output)."
+
+        val lines = rawOutput.lines()
+        val errorLines = mutableListOf<String>()
+
+        val errorPatterns = listOf(
+            Regex("""^e:\s+.*"""),                                      // Kotlin compiler errors (e: /path/File.kt:12:34: ...)
+            Regex(""".*error:\s+.*"""),                                 // javac errors
+            Regex(""".*AAPT:\s+error:.*""", RegexOption.IGNORE_CASE),   // AAPT2 XML resource errors
+            Regex(""".*Execution failed for task.*"""),                 // Failed task name
+            Regex(""".*Unresolved reference.*"""),                      // Common Kotlin compiler issues
+            Regex(""".*Type mismatch.*"""),
+            Regex(""".*Manifest merger failed.*""", RegexOption.IGNORE_CASE),
+            Regex("""FAILURE:\s+Build failed with an exception\..*""")
+        )
+
+        var captureNextCount = 0
+
+        for (line in lines) {
+            val trimmed = line.trim()
+
+            // Skip internal Gradle stack traces and daemon metadata
+            if (trimmed.startsWith("at org.gradle.") ||
+                trimmed.startsWith("at java.") ||
+                trimmed.startsWith("at com.android.tools.") ||
+                trimmed.startsWith("Caused by: org.gradle.") ||
+                trimmed.contains("WorkerExecutor") ||
+                trimmed.contains("Problems report is available") ||
+                trimmed.contains("Deprecated Gradle features were used") ||
+                trimmed.contains("BUILD FAILED in")
+            ) {
+                continue
+            }
+
+            val matchesError = errorPatterns.any { it.containsMatchIn(trimmed) }
+            if (matchesError) {
+                errorLines.add(trimmed)
+                captureNextCount = 2 // Capture the next 2 lines often containing code pointers (e.g. ^^^)
+            } else if (captureNextCount > 0) {
+                errorLines.add(trimmed)
+                captureNextCount--
+            }
+        }
+
+        // If no compiler-pattern lines matched, grab the lines immediately surrounding "FAILURE:"
+        val result = if (errorLines.isNotEmpty()) {
+            errorLines.distinct().joinToString("\n")
+        } else {
+            lines.filter { it.contains("error", ignoreCase = true) || it.contains("failed", ignoreCase = true) }
+                .take(15)
+                .joinToString("\n")
+        }
+
+        return result.take(maxChars).trim()
     }
 }
